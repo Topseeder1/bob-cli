@@ -135,37 +135,220 @@ function registerConfigCommand(program2) {
 }
 
 // src/commands/chat.ts
-import chalk3 from "chalk";
+import chalk4 from "chalk";
 import ora from "ora";
-import * as readline from "readline";
+import * as readline2 from "readline";
 
 // src/core/api-client.ts
+import axios2 from "axios";
+
+// src/commands/login.ts
+import chalk2 from "chalk";
+import http from "http";
+import open from "open";
 import axios from "axios";
+import { URL } from "url";
+import * as readline from "readline";
+var CLI_AUTH_URL = "https://bobs-workshop.web.app/cli-auth";
+var CALLBACK_PORT = 9876;
+var FIREBASE_API_KEY = "AIzaSyB-hUZEonRIzbExVDwuneJaDjJZBvHdIps";
+function registerLoginCommand(program2) {
+  program2.command("login").description("Authenticate with Bob's Workshop via browser").action(async () => {
+    console.log("");
+    console.log(chalk2.bold.cyan("  \u{1F510} Bob CLI \u2014 Login"));
+    console.log(chalk2.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+    console.log("");
+    console.log(chalk2.yellow("  \u26A0\uFE0F  Important:"));
+    console.log(chalk2.gray("  \u2022 Local conversations (Tier 1) will NOT sync to the platform."));
+    console.log(chalk2.gray("  \u2022 Only NEW conversations created after login will save to Firebase."));
+    console.log(chalk2.gray("  \u2022 Your local history stays in ~/.bob/projects/ (backup via `bob backup`)."));
+    console.log(chalk2.gray("  \u2022 Logging in upgrades you to Tier 3 (Platform) with full features."));
+    console.log("");
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise((resolve2) => {
+      rl.question(chalk2.cyan("  Continue with login? (y/n): "), resolve2);
+    });
+    rl.close();
+    if (answer.toLowerCase() !== "y" && answer.toLowerCase() !== "yes") {
+      console.log("");
+      console.log(chalk2.gray("  Login cancelled."));
+      console.log("");
+      return;
+    }
+    console.log("");
+    console.log(chalk2.gray("  Opening browser for authentication..."));
+    console.log("");
+    try {
+      const result = await startAuthFlow();
+      if (result) {
+        const exchangeResult = await exchangeCustomToken(result.token);
+        setConfigValue("authToken", exchangeResult.idToken);
+        setConfigValue("refreshToken", exchangeResult.refreshToken);
+        setConfigValue("email", result.email);
+        setConfigValue("uid", result.uid);
+        setConfigValue("loggedIn", true);
+        setConfigValue("tier", "platform");
+        console.log("");
+        console.log(chalk2.green(`  \u2705 Logged in as ${result.email}`));
+        console.log(chalk2.gray("  Tier: Platform (Tier 3)"));
+        console.log(chalk2.gray("  All platform features are now available."));
+        console.log("");
+      }
+    } catch (error) {
+      console.log(chalk2.red(`  \u274C Login failed: ${error.message}`));
+      console.log("");
+    }
+  });
+  program2.command("logout").description("Sign out and clear stored credentials").action(() => {
+    setConfigValue("authToken", null);
+    setConfigValue("refreshToken", null);
+    setConfigValue("email", null);
+    setConfigValue("uid", null);
+    setConfigValue("loggedIn", false);
+    setConfigValue("tier", "local");
+    console.log("");
+    console.log(chalk2.gray("  \u{1F44B} Logged out. Switched to Tier 1 (local-first)."));
+    console.log("");
+  });
+}
+async function exchangeCustomToken(customToken) {
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${FIREBASE_API_KEY}`;
+  const response = await axios.post(url, {
+    token: customToken,
+    returnSecureToken: true
+  });
+  if (!response.data?.idToken || !response.data?.refreshToken) {
+    throw new Error("Token exchange failed \u2014 no ID token returned.");
+  }
+  return {
+    idToken: response.data.idToken,
+    refreshToken: response.data.refreshToken
+  };
+}
+async function refreshAuthToken(refreshToken) {
+  const url = `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`;
+  const response = await axios.post(url, {
+    grant_type: "refresh_token",
+    refresh_token: refreshToken
+  });
+  if (!response.data?.id_token) {
+    throw new Error("Token refresh failed.");
+  }
+  setConfigValue("authToken", response.data.id_token);
+  return response.data.id_token;
+}
+function startAuthFlow() {
+  return new Promise((resolve2, reject) => {
+    const timeout = setTimeout(() => {
+      server.close();
+      reject(new Error("Login timed out after 120 seconds. Please try again."));
+    }, 12e4);
+    const server = http.createServer((req, res) => {
+      if (!req.url?.startsWith("/callback")) {
+        res.writeHead(404);
+        res.end("Not found");
+        return;
+      }
+      try {
+        const url = new URL(req.url, `http://localhost:${CALLBACK_PORT}`);
+        const token = url.searchParams.get("token");
+        const email = url.searchParams.get("email");
+        const uid = url.searchParams.get("uid");
+        if (!token || !email || !uid) {
+          res.writeHead(400);
+          res.end("Missing parameters");
+          reject(new Error("Invalid callback \u2014 missing token, email, or uid."));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(`
+          <html>
+            <body style="background: #0a0a0a; color: white; font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0;">
+              <div style="text-align: center;">
+                <h1>\u2705 Authenticated!</h1>
+                <p style="color: #888;">You can close this tab and return to your terminal.</p>
+              </div>
+            </body>
+          </html>
+        `);
+        clearTimeout(timeout);
+        server.close();
+        resolve2({ token, email, uid });
+      } catch (e) {
+        res.writeHead(500);
+        res.end("Error");
+        reject(e);
+      }
+    });
+    server.listen(CALLBACK_PORT, () => {
+      console.log(chalk2.gray(`  \u{1F310} Waiting for authentication (port ${CALLBACK_PORT})...`));
+      console.log(chalk2.gray("  If your browser doesn't open, visit:"));
+      console.log(chalk2.cyan(`  ${CLI_AUTH_URL}`));
+      console.log("");
+      open(CLI_AUTH_URL).catch(() => {
+      });
+    });
+    server.on("error", (err) => {
+      clearTimeout(timeout);
+      if (err.code === "EADDRINUSE") {
+        reject(new Error("Port 9876 is already in use. Close other instances and try again."));
+      } else {
+        reject(err);
+      }
+    });
+  });
+}
+
+// src/core/api-client.ts
 var FUNCTIONS_BASE = "https://us-central1-seedlingapp.cloudfunctions.net";
 async function callCloudFunction(functionName, data) {
   const config = getConfig();
   if (!config.authToken) {
     throw new Error("Not authenticated. Run `bob login` first.");
   }
-  const response = await axios.post(
-    `${FUNCTIONS_BASE}/${functionName}`,
-    { data },
-    {
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${config.authToken}`
-      },
-      timeout: 18e4
+  try {
+    const response = await axios2.post(
+      `${FUNCTIONS_BASE}/${functionName}`,
+      { data },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${config.authToken}`
+        },
+        timeout: 18e4
+      }
+    );
+    return response.data?.result || response.data;
+  } catch (error) {
+    if (error.response?.status === 401 && config.refreshToken) {
+      try {
+        const newToken = await refreshAuthToken(config.refreshToken);
+        const retryResponse = await axios2.post(
+          `${FUNCTIONS_BASE}/${functionName}`,
+          { data },
+          {
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${newToken}`
+            },
+            timeout: 18e4
+          }
+        );
+        return retryResponse.data?.result || retryResponse.data;
+      } catch (refreshError) {
+        setConfigValue("loggedIn", false);
+        throw new Error("Session expired. Run `bob login` again.");
+      }
     }
-  );
-  return response.data?.result || response.data;
+    throw error;
+  }
 }
 
 // src/ai/providers/local.ts
-import axios2 from "axios";
+import axios3 from "axios";
 async function callLocalModel(endpoint, messages) {
   try {
-    const response = await axios2.post(
+    const response = await axios3.post(
       endpoint,
       {
         model: "bob-local-dna:latest",
@@ -255,9 +438,9 @@ function readFileContent(filePath) {
 }
 
 // src/ui/renderer.ts
-import chalk2 from "chalk";
+import chalk3 from "chalk";
 function renderMarkdown(text) {
-  return text.replace(/^#{1,6}\s+(.+)$/gm, chalk2.bold.cyan("$1")).replace(/\*\*(.+?)\*\*/g, chalk2.bold("$1")).replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, chalk2.italic("$1")).replace(/^\s*[\*\-]\s+/gm, "  \u2022 ").replace(/^\s*(\d+)\.\s+/gm, "  $1. ").replace(/^[\-\*]{3,}$/gm, chalk2.gray("\u2500".repeat(60))).replace(/`([^`]+)`/g, chalk2.yellow("$1")).replace(/```[\w]*\n?/g, "").replace(/\n{3,}/g, "\n\n");
+  return text.replace(/^#{1,6}\s+(.+)$/gm, chalk3.bold.cyan("$1")).replace(/\*\*(.+?)\*\*/g, chalk3.bold("$1")).replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, chalk3.italic("$1")).replace(/^\s*[\*\-]\s+/gm, "  \u2022 ").replace(/^\s*(\d+)\.\s+/gm, "  $1. ").replace(/^[\-\*]{3,}$/gm, chalk3.gray("\u2500".repeat(60))).replace(/`([^`]+)`/g, chalk3.yellow("$1")).replace(/```[\w]*\n?/g, "").replace(/\n{3,}/g, "\n\n");
 }
 
 // src/core/conversation-store.ts
@@ -518,7 +701,7 @@ function registerChatCommand(program2) {
 ${fileContent}
 --- END FILE ---`;
       } else {
-        console.log(chalk3.yellow(`  \u26A0\uFE0F  Could not read file: ${options.file}`));
+        console.log(chalk4.yellow(`  \u26A0\uFE0F  Could not read file: ${options.file}`));
       }
     }
     if (options.interactive || !message) {
@@ -530,24 +713,25 @@ ${fileContent}
 }
 async function sendMessage(message, config, conversationId, localContext, personalized, mode, history) {
   const spinner = ora({
-    text: chalk3.cyan("  Bob is thinking..."),
+    text: chalk4.cyan("  Bob is thinking..."),
     spinner: "dots"
   }).start();
   let selectedFiles = [];
+  let hasProjectContext = null;
   try {
     let response;
     if (config.provider === "local") {
       if (!config.localEndpoint) {
         spinner.stop();
-        console.log(chalk3.red("  \u274C No local endpoint configured."));
-        console.log(chalk3.gray("  Run `bob config set localEndpoint http://127.0.0.1:11434/api/chat`"));
+        console.log(chalk4.red("  \u274C No local endpoint configured."));
+        console.log(chalk4.gray("  Run `bob config set localEndpoint http://127.0.0.1:11434/api/chat`"));
         return "";
       }
-      spinner.text = chalk3.cyan("  Bob is finding relevant files...");
+      spinner.text = chalk4.cyan("  Bob is finding relevant files...");
       const retrieval = await getRelevantFileContents(message, config.localEndpoint);
       const relevantFiles = retrieval.fileContents;
       selectedFiles = retrieval.selectedFiles;
-      spinner.text = chalk3.cyan("  Bob is thinking...");
+      spinner.text = chalk4.cyan("  Bob is thinking...");
       let fullContext = localContext;
       if (relevantFiles) {
         fullContext += `
@@ -578,7 +762,7 @@ ${fullContext}` : "") },
     } else if (personalized || config.personalizationMode) {
       if (!config.loggedIn || !config.authToken) {
         spinner.stop();
-        console.log(chalk3.red("  \u274C Personalization mode requires Tier 3 (platform login)."));
+        console.log(chalk4.red("  \u274C Personalization mode requires Tier 3 (platform login)."));
         return "";
       }
       const result = await callCloudFunction("getPersonalizedResponse", {
@@ -590,11 +774,12 @@ ${fullContext}` : "") },
         localContext: localContext || null
       });
       response = result?.text || result?.response || result?.message || "No response received.";
+      hasProjectContext = result?.hasProjectContext ?? null;
     } else {
       if (!config.loggedIn || !config.authToken) {
         spinner.stop();
-        console.log(chalk3.red("  \u274C Not logged in."));
-        console.log(chalk3.gray("  Run `bob login` to authenticate, or set provider to local."));
+        console.log(chalk4.red("  \u274C Not logged in."));
+        console.log(chalk4.gray("  Run `bob login` to authenticate, or set provider to local."));
         return "";
       }
       const result = await callCloudFunction("chatWithBobStream", {
@@ -610,26 +795,34 @@ ${fullContext}` : "") },
         localContext: localContext || null
       });
       response = result?.text || result?.response || result?.message || "No response received.";
+      hasProjectContext = result?.hasProjectContext ?? null;
     }
     spinner.stop();
     const rendered = renderMarkdown(response);
     console.log("");
-    console.log(chalk3.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
-    console.log(chalk3.bold.cyan("  \u{1F916} Bob:"));
+    console.log(chalk4.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+    console.log(chalk4.bold.cyan("  \u{1F916} Bob:"));
     console.log("");
     for (const line of rendered.split("\n")) {
       console.log(`  ${line}`);
     }
     console.log("");
     if (selectedFiles.length > 0) {
-      console.log(chalk3.gray(`  \u{1F4C2} Referenced: ${selectedFiles.join(", ")}`));
+      console.log(chalk4.gray(`  \u{1F4C2} Referenced: ${selectedFiles.join(", ")}`));
     }
-    console.log(chalk3.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+    if (config.tier === "platform" && config.provider !== "local") {
+      console.log(chalk4.gray(`  \u{1F517} https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`));
+      if (hasProjectContext === false) {
+        console.log(chalk4.red("  \u26A0\uFE0F  No project workspace connected. Upload a project via the web app"));
+        console.log(chalk4.red("     for full RAG + workspace capabilities."));
+      }
+    }
+    console.log(chalk4.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
     console.log("");
     return response;
   } catch (error) {
     spinner.stop();
-    console.log(chalk3.red(`  \u274C ${error.message || "Unknown error"}`));
+    console.log(chalk4.red(`  \u274C ${error.message || "Unknown error"}`));
     return "";
   }
 }
@@ -637,23 +830,26 @@ async function runInteractiveSession(config, conversationId, localContext, perso
   const summaries = loadSummaries(process.cwd());
   const isIndexed = summaries && Object.keys(summaries).length > 0;
   console.log("");
-  console.log(chalk3.bold.cyan("  \u{1F916} Bob \u2014 Interactive Session"));
-  console.log(chalk3.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+  console.log(chalk4.bold.cyan("  \u{1F916} Bob \u2014 Interactive Session"));
+  console.log(chalk4.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
   if (isIndexed) {
-    console.log(chalk3.green(`  \u{1F4DA} Project indexed (${Object.keys(summaries).length} files). Intelligent file selection active.`));
+    console.log(chalk4.green(`  \u{1F4DA} Project indexed (${Object.keys(summaries).length} files). Intelligent file selection active.`));
   } else {
-    console.log(chalk3.yellow("  \u26A0\uFE0F  Project not indexed. Run `bob index` for smarter responses."));
+    console.log(chalk4.yellow("  \u26A0\uFE0F  Project not indexed. Run `bob index` for smarter responses."));
   }
-  console.log(chalk3.gray("  Commands: /exit  /new  /clear"));
-  console.log(chalk3.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+  if (config.tier === "platform" && config.provider !== "local") {
+    console.log(chalk4.gray(`  \u{1F517} ${conversationId}`));
+  }
+  console.log(chalk4.gray("  Commands: /exit  /new  /clear"));
+  console.log(chalk4.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
   console.log("");
-  const rl = readline.createInterface({
+  const rl = readline2.createInterface({
     input: process.stdin,
     output: process.stdout
   });
   const history = [];
   const prompt = () => {
-    rl.question(chalk3.green("  You: "), async (input) => {
+    rl.question(chalk4.green("  You: "), async (input) => {
       const trimmed = input.trim();
       if (!trimmed) {
         prompt();
@@ -661,8 +857,11 @@ async function runInteractiveSession(config, conversationId, localContext, perso
       }
       if (trimmed === "/exit" || trimmed === "/quit") {
         console.log("");
-        console.log(chalk3.gray(`  \u{1F4BE} Session: ${conversationId.slice(0, 24)}...`));
-        console.log(chalk3.gray("  \u{1F44B} See you next time."));
+        console.log(chalk4.gray(`  \u{1F4BE} Session: ${conversationId.slice(0, 24)}...`));
+        if (config.tier === "platform" && config.provider !== "local") {
+          console.log(chalk4.gray(`  \u{1F517} https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`));
+        }
+        console.log(chalk4.gray("  \u{1F44B} See you next time."));
         console.log("");
         rl.close();
         return;
@@ -671,15 +870,15 @@ async function runInteractiveSession(config, conversationId, localContext, perso
         history.length = 0;
         conversationId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         setConfigValue("conversationId", conversationId);
-        console.log(chalk3.cyan("  \u{1F504} New session started."));
+        console.log(chalk4.cyan("  \u{1F504} New session started."));
         console.log("");
         prompt();
         return;
       }
       if (trimmed === "/clear") {
         console.clear();
-        console.log(chalk3.bold.cyan("  \u{1F916} Bob \u2014 Interactive Session"));
-        console.log(chalk3.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+        console.log(chalk4.bold.cyan("  \u{1F916} Bob \u2014 Interactive Session"));
+        console.log(chalk4.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
         console.log("");
         prompt();
         return;
@@ -696,9 +895,9 @@ async function runInteractiveSession(config, conversationId, localContext, perso
 }
 
 // src/commands/consult.ts
-import chalk4 from "chalk";
+import chalk5 from "chalk";
 import ora2 from "ora";
-import * as readline2 from "readline";
+import * as readline3 from "readline";
 function registerConsultCommand(program2) {
   program2.command("consult [message]").description("Consult with Bob \u2014 strategic advice only, no code").option("-f, --file <path>", "Include a specific file as context").option("--no-context", "Skip local directory context").option("--new", "Start a fresh conversation").option("-i, --interactive", "Enter interactive consultant session").action(async (message, options) => {
     const config = getConfig();
@@ -720,7 +919,7 @@ function registerConsultCommand(program2) {
 ${fileContent}
 --- END FILE ---`;
       } else {
-        console.log(chalk4.yellow(`  \u26A0\uFE0F  Could not read file: ${options.file}`));
+        console.log(chalk5.yellow(`  \u26A0\uFE0F  Could not read file: ${options.file}`));
       }
     }
     if (options.interactive || !message) {
@@ -732,24 +931,25 @@ ${fileContent}
 }
 async function sendConsultMessage(message, config, conversationId, localContext, history) {
   const spinner = ora2({
-    text: chalk4.cyan("  Bob is thinking (consultant mode)..."),
+    text: chalk5.cyan("  Bob is thinking (consultant mode)..."),
     spinner: "dots"
   }).start();
   let selectedFiles = [];
+  let hasProjectContext = null;
   try {
     let response;
     if (config.provider === "local") {
       if (!config.localEndpoint) {
         spinner.stop();
-        console.log(chalk4.red("  \u274C No local endpoint configured."));
-        console.log(chalk4.gray("  Run `bob config set localEndpoint http://127.0.0.1:11434/api/chat`"));
+        console.log(chalk5.red("  \u274C No local endpoint configured."));
+        console.log(chalk5.gray("  Run `bob config set localEndpoint http://127.0.0.1:11434/api/chat`"));
         return "";
       }
-      spinner.text = chalk4.cyan("  Bob is finding relevant files...");
+      spinner.text = chalk5.cyan("  Bob is finding relevant files...");
       const retrieval = await getRelevantFileContents(message, config.localEndpoint);
       const relevantFiles = retrieval.fileContents;
       selectedFiles = retrieval.selectedFiles;
-      spinner.text = chalk4.cyan("  Bob is thinking (consultant mode)...");
+      spinner.text = chalk5.cyan("  Bob is thinking (consultant mode)...");
       let fullContext = localContext;
       if (relevantFiles) {
         fullContext += `
@@ -780,8 +980,8 @@ ${fullContext}` : "") },
     } else {
       if (!config.loggedIn || !config.authToken) {
         spinner.stop();
-        console.log(chalk4.red("  \u274C Not logged in."));
-        console.log(chalk4.gray("  Run `bob login` to authenticate, or set provider to local."));
+        console.log(chalk5.red("  \u274C Not logged in."));
+        console.log(chalk5.gray("  Run `bob login` to authenticate, or set provider to local."));
         return "";
       }
       const result = await callCloudFunction("consultWithBobStream", {
@@ -797,26 +997,34 @@ ${fullContext}` : "") },
         localContext: localContext || null
       });
       response = result?.text || result?.response || result?.message || "No response received.";
+      hasProjectContext = result?.hasProjectContext ?? null;
     }
     spinner.stop();
     const rendered = renderMarkdown(response);
     console.log("");
-    console.log(chalk4.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
-    console.log(chalk4.bold.magenta("  \u{1F3AF} Bob (Consultant):"));
+    console.log(chalk5.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+    console.log(chalk5.bold.magenta("  \u{1F3AF} Bob (Consultant):"));
     console.log("");
     for (const line of rendered.split("\n")) {
       console.log(`  ${line}`);
     }
     console.log("");
     if (selectedFiles.length > 0) {
-      console.log(chalk4.gray(`  \u{1F4C2} Referenced: ${selectedFiles.join(", ")}`));
+      console.log(chalk5.gray(`  \u{1F4C2} Referenced: ${selectedFiles.join(", ")}`));
     }
-    console.log(chalk4.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+    if (config.tier === "platform" && config.provider !== "local") {
+      console.log(chalk5.gray(`  \u{1F517} https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`));
+      if (hasProjectContext === false) {
+        console.log(chalk5.red("  \u26A0\uFE0F  No project workspace connected. Upload a project via the web app"));
+        console.log(chalk5.red("     for full RAG + workspace capabilities."));
+      }
+    }
+    console.log(chalk5.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
     console.log("");
     return response;
   } catch (error) {
     spinner.stop();
-    console.log(chalk4.red(`  \u274C ${error.message || "Unknown error"}`));
+    console.log(chalk5.red(`  \u274C ${error.message || "Unknown error"}`));
     return "";
   }
 }
@@ -824,24 +1032,27 @@ async function runInteractiveSession2(config, conversationId, localContext) {
   const summaries = loadSummaries(process.cwd());
   const isIndexed = summaries && Object.keys(summaries).length > 0;
   console.log("");
-  console.log(chalk4.bold.magenta("  \u{1F3AF} Bob \u2014 Consultant Session"));
-  console.log(chalk4.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+  console.log(chalk5.bold.magenta("  \u{1F3AF} Bob \u2014 Consultant Session"));
+  console.log(chalk5.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
   if (isIndexed) {
-    console.log(chalk4.green(`  \u{1F4DA} Project indexed (${Object.keys(summaries).length} files). Intelligent file selection active.`));
+    console.log(chalk5.green(`  \u{1F4DA} Project indexed (${Object.keys(summaries).length} files). Intelligent file selection active.`));
   } else {
-    console.log(chalk4.yellow("  \u26A0\uFE0F  Project not indexed. Run `bob index` for smarter responses."));
+    console.log(chalk5.yellow("  \u26A0\uFE0F  Project not indexed. Run `bob index` for smarter responses."));
   }
-  console.log(chalk4.gray("  Strategic advice only. No code."));
-  console.log(chalk4.gray("  Commands: /exit  /new  /clear"));
-  console.log(chalk4.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+  if (config.tier === "platform" && config.provider !== "local") {
+    console.log(chalk5.gray(`  \u{1F517} ${conversationId}`));
+  }
+  console.log(chalk5.gray("  Strategic advice only. No code."));
+  console.log(chalk5.gray("  Commands: /exit  /new  /clear"));
+  console.log(chalk5.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
   console.log("");
-  const rl = readline2.createInterface({
+  const rl = readline3.createInterface({
     input: process.stdin,
     output: process.stdout
   });
   const history = [];
   const prompt = () => {
-    rl.question(chalk4.green("  You: "), async (input) => {
+    rl.question(chalk5.green("  You: "), async (input) => {
       const trimmed = input.trim();
       if (!trimmed) {
         prompt();
@@ -849,8 +1060,11 @@ async function runInteractiveSession2(config, conversationId, localContext) {
       }
       if (trimmed === "/exit" || trimmed === "/quit") {
         console.log("");
-        console.log(chalk4.gray(`  \u{1F4BE} Session: ${conversationId.slice(0, 24)}...`));
-        console.log(chalk4.gray("  \u{1F44B} See you next time."));
+        console.log(chalk5.gray(`  \u{1F4BE} Session: ${conversationId.slice(0, 24)}...`));
+        if (config.tier === "platform" && config.provider !== "local") {
+          console.log(chalk5.gray(`  \u{1F517} https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`));
+        }
+        console.log(chalk5.gray("  \u{1F44B} See you next time."));
         console.log("");
         rl.close();
         return;
@@ -859,15 +1073,15 @@ async function runInteractiveSession2(config, conversationId, localContext) {
         history.length = 0;
         conversationId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         setConfigValue("conversationId", conversationId);
-        console.log(chalk4.magenta("  \u{1F504} New consultant session started."));
+        console.log(chalk5.magenta("  \u{1F504} New consultant session started."));
         console.log("");
         prompt();
         return;
       }
       if (trimmed === "/clear") {
         console.clear();
-        console.log(chalk4.bold.magenta("  \u{1F3AF} Bob \u2014 Consultant Session"));
-        console.log(chalk4.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+        console.log(chalk5.bold.magenta("  \u{1F3AF} Bob \u2014 Consultant Session"));
+        console.log(chalk5.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
         console.log("");
         prompt();
         return;
@@ -884,7 +1098,7 @@ async function runInteractiveSession2(config, conversationId, localContext) {
 }
 
 // src/commands/index.ts
-import chalk5 from "chalk";
+import chalk6 from "chalk";
 import * as fs5 from "fs";
 import * as path5 from "path";
 var IGNORE_DIRS2 = ["node_modules", ".git", "dist", "build", ".dart_tool", ".idea", ".gradle", ".pub-cache", ".bob"];
@@ -896,23 +1110,23 @@ function registerIndexCommand(program2) {
     const projectName = getProjectName(cwd);
     if (config.provider !== "local" || !config.localEndpoint) {
       console.log("");
-      console.log(chalk5.red("  \u274C Indexing requires a local model."));
-      console.log(chalk5.gray("  Run `bob config set provider local`"));
-      console.log(chalk5.gray("  Run `bob config set localEndpoint http://127.0.0.1:11434/api/chat`"));
+      console.log(chalk6.red("  \u274C Indexing requires a local model."));
+      console.log(chalk6.gray("  Run `bob config set provider local`"));
+      console.log(chalk6.gray("  Run `bob config set localEndpoint http://127.0.0.1:11434/api/chat`"));
       console.log("");
       return;
     }
     console.log("");
-    console.log(chalk5.bold.cyan(`  \u26A1 Indexing project: ${projectName}`));
-    console.log(chalk5.gray(`  \u{1F4C1} ${cwd}`));
-    console.log(chalk5.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+    console.log(chalk6.bold.cyan(`  \u26A1 Indexing project: ${projectName}`));
+    console.log(chalk6.gray(`  \u{1F4C1} ${cwd}`));
+    console.log(chalk6.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
     console.log("");
     const files = scanProjectFiles(cwd);
     if (files.length === 0) {
-      console.log(chalk5.yellow("  \u26A0\uFE0F  No code files found to index."));
+      console.log(chalk6.yellow("  \u26A0\uFE0F  No code files found to index."));
       return;
     }
-    console.log(chalk5.gray(`  Found ${files.length} files to analyze.`));
+    console.log(chalk6.gray(`  Found ${files.length} files to analyze.`));
     console.log("");
     console.log("");
     console.log("");
@@ -927,7 +1141,7 @@ function registerIndexCommand(program2) {
       try {
         content = fs5.readFileSync(absolutePath, "utf-8");
       } catch {
-        console.log(chalk5.red(`  \u274C Could not read: ${filePath}`));
+        console.log(chalk6.red(`  \u274C Could not read: ${filePath}`));
         continue;
       }
       if (content.length > 5e4) {
@@ -961,14 +1175,14 @@ ${content}`
         updateManifestProgress(runDir, completed);
         printProgress(completed, files.length, filePath, summary.trim(), [], options.verbose);
       } catch (error) {
-        console.log(chalk5.red(`  \u274C Failed: ${filePath} \u2014 ${error.message}`));
+        console.log(chalk6.red(`  \u274C Failed: ${filePath} \u2014 ${error.message}`));
         completed++;
         updateManifestProgress(runDir, completed);
       }
     }
     console.log("");
     console.log("");
-    console.log(chalk5.cyan("  \u{1F517} Generating dependency map..."));
+    console.log(chalk6.cyan("  \u{1F517} Generating dependency map..."));
     try {
       const summaryContext = Object.entries(summaries).map(([fp, summary]) => `[${fp}]: ${summary}`).join("\n\n");
       const messages = [
@@ -994,7 +1208,7 @@ Respond with ONLY the JSON object:`
           dependencies = JSON.parse(jsonMatch[0]);
         }
       } catch {
-        console.log(chalk5.yellow("  \u26A0\uFE0F  Could not parse dependency map. Saving empty map."));
+        console.log(chalk6.yellow("  \u26A0\uFE0F  Could not parse dependency map. Saving empty map."));
         dependencies = {};
       }
       saveSummaries(cwd, summaries);
@@ -1009,17 +1223,17 @@ Respond with ONLY the JSON object:`
         }
       }
       updateManifestProgress(runDir, completed, "completed");
-      console.log(chalk5.green(`  \u2705 Dependency map generated for ${Object.keys(dependencies).length} files.`));
+      console.log(chalk6.green(`  \u2705 Dependency map generated for ${Object.keys(dependencies).length} files.`));
     } catch (error) {
-      console.log(chalk5.red(`  \u274C Dependency mapping failed: ${error.message}`));
+      console.log(chalk6.red(`  \u274C Dependency mapping failed: ${error.message}`));
       saveSummaries(cwd, summaries);
       saveDependencies(cwd, {});
       updateManifestProgress(runDir, completed, "completed_partial");
     }
     console.log("");
-    console.log(chalk5.bold.green(`  \u2705 Indexing complete: ${projectName}`));
-    console.log(chalk5.gray(`  \u{1F4C4} ${Object.keys(summaries).length} files summarized`));
-    console.log(chalk5.gray(`  \u{1F4BE} Saved to: ~/.bob/projects/${projectName}/analysis/`));
+    console.log(chalk6.bold.green(`  \u2705 Indexing complete: ${projectName}`));
+    console.log(chalk6.gray(`  \u{1F4C4} ${Object.keys(summaries).length} files summarized`));
+    console.log(chalk6.gray(`  \u{1F4BE} Saved to: ~/.bob/projects/${projectName}/analysis/`));
     console.log("");
   });
 }
@@ -1053,158 +1267,31 @@ function printProgress(completed, total, filePath, summary, dependencies, verbos
   const filled = Math.round(percent * barLength);
   let barColor;
   if (percent < 0.25) {
-    barColor = chalk5.red;
+    barColor = chalk6.red;
   } else if (percent < 0.5) {
-    barColor = chalk5.hex("#FF8C00");
+    barColor = chalk6.hex("#FF8C00");
   } else if (percent < 0.75) {
-    barColor = chalk5.yellow;
+    barColor = chalk6.yellow;
   } else {
-    barColor = chalk5.green;
+    barColor = chalk6.green;
   }
   const filledBar = barColor("\u2588".repeat(filled));
-  const emptyBar = chalk5.gray("\u2591".repeat(barLength - filled));
+  const emptyBar = chalk6.gray("\u2591".repeat(barLength - filled));
   const percentText = barColor(`${Math.round(percent * 100)}%`);
   process.stdout.write("\x1B[2K\x1B[1A\x1B[2K\x1B[1A\x1B[2K\x1B[1A\x1B[2K\r");
-  console.log(`  ${chalk5.cyan("\u26A1")} Indexing [${filledBar}${emptyBar}] ${completed}/${total} ${percentText}`);
-  console.log(chalk5.green(`  \u2705 ${filePath}`));
+  console.log(`  ${chalk6.cyan("\u26A1")} Indexing [${filledBar}${emptyBar}] ${completed}/${total} ${percentText}`);
+  console.log(chalk6.green(`  \u2705 ${filePath}`));
   if (verbose) {
-    console.log(chalk5.gray(`     "${summary.slice(0, 120)}${summary.length > 120 ? "..." : ""}"`));
+    console.log(chalk6.gray(`     "${summary.slice(0, 120)}${summary.length > 120 ? "..." : ""}"`));
     if (dependencies.length > 0) {
-      console.log(chalk5.gray(`     \u2192 depends on: ${dependencies.join(", ")}`));
+      console.log(chalk6.gray(`     \u2192 depends on: ${dependencies.join(", ")}`));
     } else {
-      console.log(chalk5.gray(`     \u2192 depends on: (mapping after all summaries)`));
+      console.log(chalk6.gray(`     \u2192 depends on: (mapping after all summaries)`));
     }
   } else {
-    console.log(chalk5.gray(`     "${summary.slice(0, 80)}${summary.length > 80 ? "..." : ""}"`));
+    console.log(chalk6.gray(`     "${summary.slice(0, 80)}${summary.length > 80 ? "..." : ""}"`));
     console.log("");
   }
-}
-
-// src/commands/login.ts
-import chalk6 from "chalk";
-import http from "http";
-import open from "open";
-import { URL } from "url";
-import * as readline3 from "readline";
-var CLI_AUTH_URL = "https://bobs-workshop.web.app/cli-auth";
-var CALLBACK_PORT = 9876;
-function registerLoginCommand(program2) {
-  program2.command("login").description("Authenticate with Bob's Workshop via browser").action(async () => {
-    console.log("");
-    console.log(chalk6.bold.cyan("  \u{1F510} Bob CLI \u2014 Login"));
-    console.log(chalk6.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
-    console.log("");
-    console.log(chalk6.yellow("  \u26A0\uFE0F  Important:"));
-    console.log(chalk6.gray("  \u2022 Local conversations (Tier 1) will NOT sync to the platform."));
-    console.log(chalk6.gray("  \u2022 Only NEW conversations created after login will save to Firebase."));
-    console.log(chalk6.gray("  \u2022 Your local history stays in ~/.bob/projects/ (backup via `bob backup`)."));
-    console.log(chalk6.gray("  \u2022 Logging in upgrades you to Tier 3 (Platform) with full features."));
-    console.log("");
-    const rl = readline3.createInterface({ input: process.stdin, output: process.stdout });
-    const answer = await new Promise((resolve2) => {
-      rl.question(chalk6.cyan("  Continue with login? (y/n): "), resolve2);
-    });
-    rl.close();
-    if (answer.toLowerCase() !== "y" && answer.toLowerCase() !== "yes") {
-      console.log("");
-      console.log(chalk6.gray("  Login cancelled."));
-      console.log("");
-      return;
-    }
-    console.log("");
-    console.log(chalk6.gray("  Opening browser for authentication..."));
-    console.log("");
-    try {
-      const result = await startAuthFlow();
-      if (result) {
-        setConfigValue("authToken", result.token);
-        setConfigValue("email", result.email);
-        setConfigValue("uid", result.uid);
-        setConfigValue("loggedIn", true);
-        setConfigValue("tier", "platform");
-        console.log("");
-        console.log(chalk6.green(`  \u2705 Logged in as ${result.email}`));
-        console.log(chalk6.gray("  Tier: Platform (Tier 3)"));
-        console.log(chalk6.gray("  All platform features are now available."));
-        console.log("");
-      }
-    } catch (error) {
-      console.log(chalk6.red(`  \u274C Login failed: ${error.message}`));
-      console.log("");
-    }
-  });
-  program2.command("logout").description("Sign out and clear stored credentials").action(() => {
-    setConfigValue("authToken", null);
-    setConfigValue("refreshToken", null);
-    setConfigValue("email", null);
-    setConfigValue("uid", null);
-    setConfigValue("loggedIn", false);
-    setConfigValue("tier", "local");
-    console.log("");
-    console.log(chalk6.gray("  \u{1F44B} Logged out. Switched to Tier 1 (local-first)."));
-    console.log("");
-  });
-}
-function startAuthFlow() {
-  return new Promise((resolve2, reject) => {
-    const timeout = setTimeout(() => {
-      server.close();
-      reject(new Error("Login timed out after 120 seconds. Please try again."));
-    }, 12e4);
-    const server = http.createServer((req, res) => {
-      if (!req.url?.startsWith("/callback")) {
-        res.writeHead(404);
-        res.end("Not found");
-        return;
-      }
-      try {
-        const url = new URL(req.url, `http://localhost:${CALLBACK_PORT}`);
-        const token = url.searchParams.get("token");
-        const email = url.searchParams.get("email");
-        const uid = url.searchParams.get("uid");
-        if (!token || !email || !uid) {
-          res.writeHead(400);
-          res.end("Missing parameters");
-          reject(new Error("Invalid callback \u2014 missing token, email, or uid."));
-          return;
-        }
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(`
-          <html>
-            <body style="background: #0a0a0a; color: white; font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0;">
-              <div style="text-align: center;">
-                <h1>\u2705 Authenticated!</h1>
-                <p style="color: #888;">You can close this tab and return to your terminal.</p>
-              </div>
-            </body>
-          </html>
-        `);
-        clearTimeout(timeout);
-        server.close();
-        resolve2({ token, email, uid });
-      } catch (e) {
-        res.writeHead(500);
-        res.end("Error");
-        reject(e);
-      }
-    });
-    server.listen(CALLBACK_PORT, () => {
-      console.log(chalk6.gray(`  \u{1F310} Waiting for authentication (port ${CALLBACK_PORT})...`));
-      console.log(chalk6.gray("  If your browser doesn't open, visit:"));
-      console.log(chalk6.cyan(`  ${CLI_AUTH_URL}`));
-      console.log("");
-      open(CLI_AUTH_URL).catch(() => {
-      });
-    });
-    server.on("error", (err) => {
-      clearTimeout(timeout);
-      if (err.code === "EADDRINUSE") {
-        reject(new Error("Port 9876 is already in use. Close other instances and try again."));
-      } else {
-        reject(err);
-      }
-    });
-  });
 }
 
 // src/commands/push.ts

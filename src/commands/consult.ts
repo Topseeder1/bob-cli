@@ -68,6 +68,7 @@ async function sendConsultMessage(
   }).start();
 
   let selectedFiles: string[] = [];
+  let hasProjectContext: boolean | null = null;
 
   try {
     let response: string;
@@ -89,7 +90,6 @@ async function sendConsultMessage(
 
       spinner.text = chalk.cyan('  Bob is thinking (consultant mode)...');
 
-      // Build full context: local tree + relevant file contents
       let fullContext = localContext;
       if (relevantFiles) {
         fullContext += `\n\n${relevantFiles}`;
@@ -141,6 +141,7 @@ async function sendConsultMessage(
       });
 
       response = result?.text || result?.response || result?.message || 'No response received.';
+      hasProjectContext = result?.hasProjectContext ?? null;
     }
 
     spinner.stop();
@@ -158,6 +159,16 @@ async function sendConsultMessage(
     if (selectedFiles.length > 0) {
       console.log(chalk.gray(`  📂 Referenced: ${selectedFiles.join(', ')}`));
     }
+
+    // ─── TIER 3 FOOTER ───
+    if (config.tier === 'platform' && config.provider !== 'local') {
+      console.log(chalk.gray(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`));
+      if (hasProjectContext === false) {
+        console.log(chalk.red('  ⚠️  No project workspace connected. Upload a project via the web app'));
+        console.log(chalk.red('     for full RAG + workspace capabilities.'));
+      }
+    }
+
     console.log(chalk.gray('  ─────────────────────────────────────'));
     console.log('');
 
@@ -186,6 +197,9 @@ async function runInteractiveSession(
   } else {
     console.log(chalk.yellow('  ⚠️  Project not indexed. Run `bob index` for smarter responses.'));
   }
+  if (config.tier === 'platform' && config.provider !== 'local') {
+    console.log(chalk.gray(`  🔗 ${conversationId}`));
+  }
   console.log(chalk.gray('  Strategic advice only. No code.'));
   console.log(chalk.gray('  Commands: /exit  /new  /clear'));
   console.log(chalk.gray('  ─────────────────────────────────────'));
@@ -211,6 +225,9 @@ async function runInteractiveSession(
       if (trimmed === '/exit' || trimmed === '/quit') {
         console.log('');
         console.log(chalk.gray(`  💾 Session: ${conversationId.slice(0, 24)}...`));
+        if (config.tier === 'platform' && config.provider !== 'local') {
+          console.log(chalk.gray(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`));
+        }
         console.log(chalk.gray('  👋 See you next time.'));
         console.log('');
         rl.close();

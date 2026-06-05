@@ -2,12 +2,14 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import http from 'http';
 import open from 'open';
+import axios from 'axios';
 import { URL } from 'url';
 import * as readline from 'readline';
 import { setConfigValue } from '../core/config-store.js';
 
 const CLI_AUTH_URL = 'https://bobs-workshop.web.app/cli-auth';
 const CALLBACK_PORT = 9876;
+const FIREBASE_API_KEY = 'AIzaSyB-hUZEonRIzbExVDwuneJaDjJZBvHdIps';
 
 export function registerLoginCommand(program: Command): void {
   program
@@ -48,7 +50,11 @@ export function registerLoginCommand(program: Command): void {
         const result = await startAuthFlow();
 
         if (result) {
-          setConfigValue('authToken', result.token);
+          // Exchange custom token for ID token
+          const exchangeResult = await exchangeCustomToken(result.token);
+
+          setConfigValue('authToken', exchangeResult.idToken);
+          setConfigValue('refreshToken', exchangeResult.refreshToken);
           setConfigValue('email', result.email);
           setConfigValue('uid', result.uid);
           setConfigValue('loggedIn', true);
@@ -81,6 +87,50 @@ export function registerLoginCommand(program: Command): void {
       console.log(chalk.gray('  👋 Logged out. Switched to Tier 1 (local-first).'));
       console.log('');
     });
+}
+
+/**
+ * Exchanges a Firebase custom token for an ID token + refresh token
+ * using the Firebase Auth REST API.
+ */
+async function exchangeCustomToken(customToken: string): Promise<{ idToken: string; refreshToken: string }> {
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${FIREBASE_API_KEY}`;
+
+  const response = await axios.post(url, {
+    token: customToken,
+    returnSecureToken: true,
+  });
+
+  if (!response.data?.idToken || !response.data?.refreshToken) {
+    throw new Error('Token exchange failed — no ID token returned.');
+  }
+
+  return {
+    idToken: response.data.idToken,
+    refreshToken: response.data.refreshToken,
+  };
+}
+
+/**
+ * Refreshes an expired ID token using the stored refresh token.
+ * Call this when a 401 is received.
+ */
+export async function refreshAuthToken(refreshToken: string): Promise<string> {
+  const url = `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`;
+
+  const response = await axios.post(url, {
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+  });
+
+  if (!response.data?.id_token) {
+    throw new Error('Token refresh failed.');
+  }
+
+  // Update stored token
+  setConfigValue('authToken', response.data.id_token);
+
+  return response.data.id_token;
 }
 
 function startAuthFlow(): Promise<{ token: string; email: string; uid: string }> {
