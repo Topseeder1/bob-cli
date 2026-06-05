@@ -9,6 +9,8 @@ import { CONSULTANT_STYLE_PROMPT } from '../ai/persona.js';
 import { buildLocalContext, readFileContent } from '../core/context-builder.js';
 import { renderMarkdown } from '../ui/renderer.js';
 import { saveMessage } from '../core/conversation-store.js';
+import { loadSummaries } from '../core/project-map.js';
+import { getRelevantFileContents } from '../core/file-retrieval.js';
 
 export function registerConsultCommand(program: Command): void {
   program
@@ -65,6 +67,8 @@ async function sendConsultMessage(
     spinner: 'dots',
   }).start();
 
+  let selectedFiles: string[] = [];
+
   try {
     let response: string;
 
@@ -77,8 +81,22 @@ async function sendConsultMessage(
         return '';
       }
 
+      // ─── TWO-STEP RETRIEVAL ───
+      spinner.text = chalk.cyan('  Bob is finding relevant files...');
+      const retrieval = await getRelevantFileContents(message, config.localEndpoint!);
+      const relevantFiles = retrieval.fileContents;
+      selectedFiles = retrieval.selectedFiles;
+
+      spinner.text = chalk.cyan('  Bob is thinking (consultant mode)...');
+
+      // Build full context: local tree + relevant file contents
+      let fullContext = localContext;
+      if (relevantFiles) {
+        fullContext += `\n\n${relevantFiles}`;
+      }
+
       const messages: LocalChatMessage[] = [
-        { role: 'system', content: CONSULTANT_STYLE_PROMPT + (localContext ? `\n\n## PROJECT CONTEXT ##\n${localContext}` : '') },
+        { role: 'system', content: CONSULTANT_STYLE_PROMPT + (fullContext ? `\n\n## PROJECT CONTEXT ##\n${fullContext}` : '') },
         ...history,
         { role: 'user', content: message },
       ];
@@ -123,7 +141,6 @@ async function sendConsultMessage(
       });
 
       response = result?.text || result?.response || result?.message || 'No response received.';
-      // Tier 3: backend saves messages automatically
     }
 
     spinner.stop();
@@ -138,6 +155,9 @@ async function sendConsultMessage(
       console.log(`  ${line}`);
     }
     console.log('');
+    if (selectedFiles.length > 0) {
+      console.log(chalk.gray(`  📂 Referenced: ${selectedFiles.join(', ')}`));
+    }
     console.log(chalk.gray('  ─────────────────────────────────────'));
     console.log('');
 
@@ -155,9 +175,17 @@ async function runInteractiveSession(
   conversationId: string,
   localContext: string,
 ): Promise<void> {
+  const summaries = loadSummaries(process.cwd());
+  const isIndexed = summaries && Object.keys(summaries).length > 0;
+
   console.log('');
   console.log(chalk.bold.magenta('  🎯 Bob — Consultant Session'));
   console.log(chalk.gray('  ─────────────────────────────────────'));
+  if (isIndexed) {
+    console.log(chalk.green(`  📚 Project indexed (${Object.keys(summaries!).length} files). Intelligent file selection active.`));
+  } else {
+    console.log(chalk.yellow('  ⚠️  Project not indexed. Run `bob index` for smarter responses.'));
+  }
   console.log(chalk.gray('  Strategic advice only. No code.'));
   console.log(chalk.gray('  Commands: /exit  /new  /clear'));
   console.log(chalk.gray('  ─────────────────────────────────────'));

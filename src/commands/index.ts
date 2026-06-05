@@ -53,6 +53,12 @@ export function registerIndexCommand(program: Command): void {
       console.log(chalk.gray(`  Found ${files.length} files to analyze.`));
       console.log('');
 
+      // Seed blank lines for progress display to overwrite
+      console.log('');
+      console.log('');
+      console.log('');
+      console.log('');
+
       // ─── CREATE RUN ───
       const { runId, runDir, tasksDir } = createAnalysisRun(cwd, files);
       const summaries: Record<string, string> = {};
@@ -108,6 +114,7 @@ export function registerIndexCommand(program: Command): void {
       }
 
       // ─── PHASE 3: DEPENDENCY MAPPING ───
+      console.log('');
       console.log('');
       console.log(chalk.cyan('  🔗 Generating dependency map...'));
 
@@ -214,19 +221,44 @@ function printProgress(
   dependencies: string[],
   verbose?: boolean
 ): void {
-  const barLength = 20;
-  const filled = Math.round((completed / total) * barLength);
-  const bar = '█'.repeat(filled) + '░'.repeat(barLength - filled);
+  const percent = completed / total;
+  const barLength = 30;
+  const filled = Math.round(percent * barLength);
 
-  // Clear line and print progress bar
-  process.stdout.write(`\r  ${chalk.cyan('⚡')} [${bar}] ${completed}/${total}`);
+  // Color shifts based on progress
+  let barColor: (text: string) => string;
+  if (percent < 0.25) {
+    barColor = chalk.red;
+  } else if (percent < 0.50) {
+    barColor = chalk.hex('#FF8C00');
+  } else if (percent < 0.75) {
+    barColor = chalk.yellow;
+  } else {
+    barColor = chalk.green;
+  }
+
+  const filledBar = barColor('█'.repeat(filled));
+  const emptyBar = chalk.gray('░'.repeat(barLength - filled));
+  const percentText = barColor(`${Math.round(percent * 100)}%`);
+
+  // Clear previous output (4 lines)
+  process.stdout.write('\x1B[2K\x1B[1A\x1B[2K\x1B[1A\x1B[2K\x1B[1A\x1B[2K\r');
+
+  // Print bar
+  console.log(`  ${chalk.cyan('⚡')} Indexing [${filledBar}${emptyBar}] ${completed}/${total} ${percentText}`);
+
+  // Print latest completed file
+  console.log(chalk.green(`  ✅ ${filePath}`));
 
   if (verbose) {
-    console.log('');
-    console.log(chalk.green(`  ✅ ${filePath}`));
     console.log(chalk.gray(`     "${summary.slice(0, 120)}${summary.length > 120 ? '...' : ''}"`));
     if (dependencies.length > 0) {
       console.log(chalk.gray(`     → depends on: ${dependencies.join(', ')}`));
+    } else {
+      console.log(chalk.gray(`     → depends on: (mapping after all summaries)`));
     }
+  } else {
+    console.log(chalk.gray(`     "${summary.slice(0, 80)}${summary.length > 80 ? '...' : ''}"`));
+    console.log('');
   }
 }

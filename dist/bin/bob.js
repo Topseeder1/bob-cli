@@ -2,7 +2,8 @@
 
 // bin/bob.ts
 import { Command } from "commander";
-import chalk6 from "chalk";
+import chalk8 from "chalk";
+import * as path6 from "path";
 
 // src/core/config-store.ts
 import Conf from "conf";
@@ -359,6 +360,26 @@ function saveDependencies(workingDir, dependencies) {
   const { analysisDir } = ensureProjectStructure(workingDir);
   fs2.writeFileSync(path2.join(analysisDir, "dependencies.json"), JSON.stringify(dependencies, null, 2));
 }
+function loadSummaries(workingDir) {
+  const { analysisDir } = ensureProjectStructure(workingDir);
+  const summariesPath = path2.join(analysisDir, "summaries.json");
+  if (!fs2.existsSync(summariesPath)) return null;
+  try {
+    return JSON.parse(fs2.readFileSync(summariesPath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+function loadDependencies(workingDir) {
+  const { analysisDir } = ensureProjectStructure(workingDir);
+  const depsPath = path2.join(analysisDir, "dependencies.json");
+  if (!fs2.existsSync(depsPath)) return null;
+  try {
+    return JSON.parse(fs2.readFileSync(depsPath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
 
 // src/core/conversation-store.ts
 function saveMessage(conversationId, message, meta) {
@@ -406,6 +427,75 @@ function createMeta(conversationId, meta) {
   };
 }
 
+// src/core/file-retrieval.ts
+import * as fs4 from "fs";
+import * as path4 from "path";
+async function getRelevantFileContents(userMessage, localEndpoint) {
+  const cwd = process.cwd();
+  const summaries = loadSummaries(cwd);
+  const dependencies = loadDependencies(cwd);
+  if (!summaries || Object.keys(summaries).length === 0) {
+    return { fileContents: "", selectedFiles: [] };
+  }
+  let mapContext = "PROJECT MAP:\n";
+  for (const [filePath, summary] of Object.entries(summaries)) {
+    mapContext += `- ${filePath}: "${summary}"
+`;
+  }
+  if (dependencies && Object.keys(dependencies).length > 0) {
+    mapContext += "\nDEPENDENCIES:\n";
+    for (const [filePath, deps] of Object.entries(dependencies)) {
+      if (deps.length > 0) {
+        mapContext += `- ${filePath} depends on: [${deps.join(", ")}]
+`;
+      }
+    }
+  }
+  const selectionMessages = [
+    {
+      role: "system",
+      content: 'You are a file selector. Based on the user request and project map, return ONLY a JSON array of file paths that are relevant to answering this request. Maximum 5 files. No explanation, no markdown, no code fences. Just a raw JSON array like: ["path/to/file.ts", "path/to/other.ts"]'
+    },
+    {
+      role: "user",
+      content: `USER REQUEST: "${userMessage}"
+
+${mapContext}
+
+Return ONLY the JSON array of relevant file paths:`
+    }
+  ];
+  try {
+    const selectionResponse = await callLocalModel(localEndpoint, selectionMessages);
+    const jsonMatch = selectionResponse.match(/\[[\s\S]*?\]/);
+    if (!jsonMatch) return { fileContents: "", selectedFiles: [] };
+    const selectedFiles = JSON.parse(jsonMatch[0]);
+    if (!Array.isArray(selectedFiles) || selectedFiles.length === 0) {
+      return { fileContents: "", selectedFiles: [] };
+    }
+    let fileContents = "## RELEVANT FILES (selected by Bob from project index) ##\n\n";
+    const validFiles = [];
+    for (const filePath of selectedFiles.slice(0, 5)) {
+      const absolutePath = path4.join(cwd, filePath);
+      try {
+        if (fs4.existsSync(absolutePath)) {
+          const content = fs4.readFileSync(absolutePath, "utf-8");
+          fileContents += `--- FILE: ${filePath} ---
+${content}
+--- END FILE ---
+
+`;
+          validFiles.push(filePath);
+        }
+      } catch {
+      }
+    }
+    return { fileContents, selectedFiles: validFiles };
+  } catch {
+    return { fileContents: "", selectedFiles: [] };
+  }
+}
+
 // src/commands/chat.ts
 function registerChatCommand(program2) {
   program2.command("chat [message]").description("Chat with Bob \u2014 code-friendly engineering partner").option("-f, --file <path>", "Include a specific file as context").option("--no-context", "Skip local directory context").option("--personalized", "Use personalization mode (Tier 3 only)").option("--new", "Start a fresh conversation").option("-i, --interactive", "Enter interactive conversation mode").action(async (message, options) => {
@@ -443,6 +533,7 @@ async function sendMessage(message, config, conversationId, localContext, person
     text: chalk3.cyan("  Bob is thinking..."),
     spinner: "dots"
   }).start();
+  let selectedFiles = [];
   try {
     let response;
     if (config.provider === "local") {
@@ -452,11 +543,22 @@ async function sendMessage(message, config, conversationId, localContext, person
         console.log(chalk3.gray("  Run `bob config set localEndpoint http://127.0.0.1:11434/api/chat`"));
         return "";
       }
+      spinner.text = chalk3.cyan("  Bob is finding relevant files...");
+      const retrieval = await getRelevantFileContents(message, config.localEndpoint);
+      const relevantFiles = retrieval.fileContents;
+      selectedFiles = retrieval.selectedFiles;
+      spinner.text = chalk3.cyan("  Bob is thinking...");
+      let fullContext = localContext;
+      if (relevantFiles) {
+        fullContext += `
+
+${relevantFiles}`;
+      }
       const messages = [
-        { role: "system", content: STANDARD_STYLE_PROMPT + (localContext ? `
+        { role: "system", content: STANDARD_STYLE_PROMPT + (fullContext ? `
 
 ## PROJECT CONTEXT ##
-${localContext}` : "") },
+${fullContext}` : "") },
         ...history,
         { role: "user", content: message }
       ];
@@ -519,6 +621,9 @@ ${localContext}` : "") },
       console.log(`  ${line}`);
     }
     console.log("");
+    if (selectedFiles.length > 0) {
+      console.log(chalk3.gray(`  \u{1F4C2} Referenced: ${selectedFiles.join(", ")}`));
+    }
     console.log(chalk3.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
     console.log("");
     return response;
@@ -529,10 +634,16 @@ ${localContext}` : "") },
   }
 }
 async function runInteractiveSession(config, conversationId, localContext, personalized, mode) {
+  const summaries = loadSummaries(process.cwd());
+  const isIndexed = summaries && Object.keys(summaries).length > 0;
   console.log("");
   console.log(chalk3.bold.cyan("  \u{1F916} Bob \u2014 Interactive Session"));
   console.log(chalk3.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
-  console.log(chalk3.gray("  Type your message and press Enter."));
+  if (isIndexed) {
+    console.log(chalk3.green(`  \u{1F4DA} Project indexed (${Object.keys(summaries).length} files). Intelligent file selection active.`));
+  } else {
+    console.log(chalk3.yellow("  \u26A0\uFE0F  Project not indexed. Run `bob index` for smarter responses."));
+  }
   console.log(chalk3.gray("  Commands: /exit  /new  /clear"));
   console.log(chalk3.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
   console.log("");
@@ -624,6 +735,7 @@ async function sendConsultMessage(message, config, conversationId, localContext,
     text: chalk4.cyan("  Bob is thinking (consultant mode)..."),
     spinner: "dots"
   }).start();
+  let selectedFiles = [];
   try {
     let response;
     if (config.provider === "local") {
@@ -633,11 +745,22 @@ async function sendConsultMessage(message, config, conversationId, localContext,
         console.log(chalk4.gray("  Run `bob config set localEndpoint http://127.0.0.1:11434/api/chat`"));
         return "";
       }
+      spinner.text = chalk4.cyan("  Bob is finding relevant files...");
+      const retrieval = await getRelevantFileContents(message, config.localEndpoint);
+      const relevantFiles = retrieval.fileContents;
+      selectedFiles = retrieval.selectedFiles;
+      spinner.text = chalk4.cyan("  Bob is thinking (consultant mode)...");
+      let fullContext = localContext;
+      if (relevantFiles) {
+        fullContext += `
+
+${relevantFiles}`;
+      }
       const messages = [
-        { role: "system", content: CONSULTANT_STYLE_PROMPT + (localContext ? `
+        { role: "system", content: CONSULTANT_STYLE_PROMPT + (fullContext ? `
 
 ## PROJECT CONTEXT ##
-${localContext}` : "") },
+${fullContext}` : "") },
         ...history,
         { role: "user", content: message }
       ];
@@ -685,6 +808,9 @@ ${localContext}` : "") },
       console.log(`  ${line}`);
     }
     console.log("");
+    if (selectedFiles.length > 0) {
+      console.log(chalk4.gray(`  \u{1F4C2} Referenced: ${selectedFiles.join(", ")}`));
+    }
     console.log(chalk4.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
     console.log("");
     return response;
@@ -695,9 +821,16 @@ ${localContext}` : "") },
   }
 }
 async function runInteractiveSession2(config, conversationId, localContext) {
+  const summaries = loadSummaries(process.cwd());
+  const isIndexed = summaries && Object.keys(summaries).length > 0;
   console.log("");
   console.log(chalk4.bold.magenta("  \u{1F3AF} Bob \u2014 Consultant Session"));
   console.log(chalk4.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+  if (isIndexed) {
+    console.log(chalk4.green(`  \u{1F4DA} Project indexed (${Object.keys(summaries).length} files). Intelligent file selection active.`));
+  } else {
+    console.log(chalk4.yellow("  \u26A0\uFE0F  Project not indexed. Run `bob index` for smarter responses."));
+  }
   console.log(chalk4.gray("  Strategic advice only. No code."));
   console.log(chalk4.gray("  Commands: /exit  /new  /clear"));
   console.log(chalk4.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
@@ -752,8 +885,8 @@ async function runInteractiveSession2(config, conversationId, localContext) {
 
 // src/commands/index.ts
 import chalk5 from "chalk";
-import * as fs4 from "fs";
-import * as path4 from "path";
+import * as fs5 from "fs";
+import * as path5 from "path";
 var IGNORE_DIRS2 = ["node_modules", ".git", "dist", "build", ".dart_tool", ".idea", ".gradle", ".pub-cache", ".bob"];
 var CODE_EXTENSIONS = /* @__PURE__ */ new Set([".dart", ".js", ".ts", ".html", ".css", ".json", ".yaml", ".yml", ".xml", ".sh", ".md"]);
 function registerIndexCommand(program2) {
@@ -781,14 +914,18 @@ function registerIndexCommand(program2) {
     }
     console.log(chalk5.gray(`  Found ${files.length} files to analyze.`));
     console.log("");
+    console.log("");
+    console.log("");
+    console.log("");
+    console.log("");
     const { runId, runDir, tasksDir } = createAnalysisRun(cwd, files);
     const summaries = {};
     let completed = 0;
     for (const filePath of files) {
-      const absolutePath = path4.join(cwd, filePath);
+      const absolutePath = path5.join(cwd, filePath);
       let content;
       try {
-        content = fs4.readFileSync(absolutePath, "utf-8");
+        content = fs5.readFileSync(absolutePath, "utf-8");
       } catch {
         console.log(chalk5.red(`  \u274C Could not read: ${filePath}`));
         continue;
@@ -830,6 +967,7 @@ ${content}`
       }
     }
     console.log("");
+    console.log("");
     console.log(chalk5.cyan("  \u{1F517} Generating dependency map..."));
     try {
       const summaryContext = Object.entries(summaries).map(([fp, summary]) => `[${fp}]: ${summary}`).join("\n\n");
@@ -863,11 +1001,11 @@ Respond with ONLY the JSON object:`
       saveDependencies(cwd, dependencies);
       for (const [filePath, deps] of Object.entries(dependencies)) {
         const taskId = filePath.replace(/[\/\\]/g, "_");
-        const taskPath = path4.join(tasksDir, `${taskId}.json`);
-        if (fs4.existsSync(taskPath)) {
-          const task = JSON.parse(fs4.readFileSync(taskPath, "utf-8"));
+        const taskPath = path5.join(tasksDir, `${taskId}.json`);
+        if (fs5.existsSync(taskPath)) {
+          const task = JSON.parse(fs5.readFileSync(taskPath, "utf-8"));
           task.dependencies = deps;
-          fs4.writeFileSync(taskPath, JSON.stringify(task, null, 2));
+          fs5.writeFileSync(taskPath, JSON.stringify(task, null, 2));
         }
       }
       updateManifestProgress(runDir, completed, "completed");
@@ -890,16 +1028,16 @@ function scanProjectFiles(rootDir, currentDir, depth = 0) {
   const dir = currentDir || rootDir;
   const files = [];
   try {
-    const entries = fs4.readdirSync(dir, { withFileTypes: true });
+    const entries = fs5.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (IGNORE_DIRS2.includes(entry.name)) continue;
       if (entry.name.startsWith(".")) continue;
-      const fullPath = path4.join(dir, entry.name);
-      const relativePath = path4.relative(rootDir, fullPath).replace(/\\/g, "/");
+      const fullPath = path5.join(dir, entry.name);
+      const relativePath = path5.relative(rootDir, fullPath).replace(/\\/g, "/");
       if (entry.isDirectory()) {
         files.push(...scanProjectFiles(rootDir, fullPath, depth + 1));
       } else {
-        const ext = path4.extname(entry.name).toLowerCase();
+        const ext = path5.extname(entry.name).toLowerCase();
         if (CODE_EXTENSIONS.has(ext)) {
           files.push(relativePath);
         }
@@ -910,18 +1048,245 @@ function scanProjectFiles(rootDir, currentDir, depth = 0) {
   return files;
 }
 function printProgress(completed, total, filePath, summary, dependencies, verbose) {
-  const barLength = 20;
-  const filled = Math.round(completed / total * barLength);
-  const bar = "\u2588".repeat(filled) + "\u2591".repeat(barLength - filled);
-  process.stdout.write(`\r  ${chalk5.cyan("\u26A1")} [${bar}] ${completed}/${total}`);
+  const percent = completed / total;
+  const barLength = 30;
+  const filled = Math.round(percent * barLength);
+  let barColor;
+  if (percent < 0.25) {
+    barColor = chalk5.red;
+  } else if (percent < 0.5) {
+    barColor = chalk5.hex("#FF8C00");
+  } else if (percent < 0.75) {
+    barColor = chalk5.yellow;
+  } else {
+    barColor = chalk5.green;
+  }
+  const filledBar = barColor("\u2588".repeat(filled));
+  const emptyBar = chalk5.gray("\u2591".repeat(barLength - filled));
+  const percentText = barColor(`${Math.round(percent * 100)}%`);
+  process.stdout.write("\x1B[2K\x1B[1A\x1B[2K\x1B[1A\x1B[2K\x1B[1A\x1B[2K\r");
+  console.log(`  ${chalk5.cyan("\u26A1")} Indexing [${filledBar}${emptyBar}] ${completed}/${total} ${percentText}`);
+  console.log(chalk5.green(`  \u2705 ${filePath}`));
   if (verbose) {
-    console.log("");
-    console.log(chalk5.green(`  \u2705 ${filePath}`));
     console.log(chalk5.gray(`     "${summary.slice(0, 120)}${summary.length > 120 ? "..." : ""}"`));
     if (dependencies.length > 0) {
       console.log(chalk5.gray(`     \u2192 depends on: ${dependencies.join(", ")}`));
+    } else {
+      console.log(chalk5.gray(`     \u2192 depends on: (mapping after all summaries)`));
     }
+  } else {
+    console.log(chalk5.gray(`     "${summary.slice(0, 80)}${summary.length > 80 ? "..." : ""}"`));
+    console.log("");
   }
+}
+
+// src/commands/login.ts
+import chalk6 from "chalk";
+import http from "http";
+import open from "open";
+import { URL } from "url";
+import * as readline3 from "readline";
+var CLI_AUTH_URL = "https://bobs-workshop.web.app/cli-auth";
+var CALLBACK_PORT = 9876;
+function registerLoginCommand(program2) {
+  program2.command("login").description("Authenticate with Bob's Workshop via browser").action(async () => {
+    console.log("");
+    console.log(chalk6.bold.cyan("  \u{1F510} Bob CLI \u2014 Login"));
+    console.log(chalk6.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+    console.log("");
+    console.log(chalk6.yellow("  \u26A0\uFE0F  Important:"));
+    console.log(chalk6.gray("  \u2022 Local conversations (Tier 1) will NOT sync to the platform."));
+    console.log(chalk6.gray("  \u2022 Only NEW conversations created after login will save to Firebase."));
+    console.log(chalk6.gray("  \u2022 Your local history stays in ~/.bob/projects/ (backup via `bob backup`)."));
+    console.log(chalk6.gray("  \u2022 Logging in upgrades you to Tier 3 (Platform) with full features."));
+    console.log("");
+    const rl = readline3.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise((resolve2) => {
+      rl.question(chalk6.cyan("  Continue with login? (y/n): "), resolve2);
+    });
+    rl.close();
+    if (answer.toLowerCase() !== "y" && answer.toLowerCase() !== "yes") {
+      console.log("");
+      console.log(chalk6.gray("  Login cancelled."));
+      console.log("");
+      return;
+    }
+    console.log("");
+    console.log(chalk6.gray("  Opening browser for authentication..."));
+    console.log("");
+    try {
+      const result = await startAuthFlow();
+      if (result) {
+        setConfigValue("authToken", result.token);
+        setConfigValue("email", result.email);
+        setConfigValue("uid", result.uid);
+        setConfigValue("loggedIn", true);
+        setConfigValue("tier", "platform");
+        console.log("");
+        console.log(chalk6.green(`  \u2705 Logged in as ${result.email}`));
+        console.log(chalk6.gray("  Tier: Platform (Tier 3)"));
+        console.log(chalk6.gray("  All platform features are now available."));
+        console.log("");
+      }
+    } catch (error) {
+      console.log(chalk6.red(`  \u274C Login failed: ${error.message}`));
+      console.log("");
+    }
+  });
+  program2.command("logout").description("Sign out and clear stored credentials").action(() => {
+    setConfigValue("authToken", null);
+    setConfigValue("refreshToken", null);
+    setConfigValue("email", null);
+    setConfigValue("uid", null);
+    setConfigValue("loggedIn", false);
+    setConfigValue("tier", "local");
+    console.log("");
+    console.log(chalk6.gray("  \u{1F44B} Logged out. Switched to Tier 1 (local-first)."));
+    console.log("");
+  });
+}
+function startAuthFlow() {
+  return new Promise((resolve2, reject) => {
+    const timeout = setTimeout(() => {
+      server.close();
+      reject(new Error("Login timed out after 120 seconds. Please try again."));
+    }, 12e4);
+    const server = http.createServer((req, res) => {
+      if (!req.url?.startsWith("/callback")) {
+        res.writeHead(404);
+        res.end("Not found");
+        return;
+      }
+      try {
+        const url = new URL(req.url, `http://localhost:${CALLBACK_PORT}`);
+        const token = url.searchParams.get("token");
+        const email = url.searchParams.get("email");
+        const uid = url.searchParams.get("uid");
+        if (!token || !email || !uid) {
+          res.writeHead(400);
+          res.end("Missing parameters");
+          reject(new Error("Invalid callback \u2014 missing token, email, or uid."));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(`
+          <html>
+            <body style="background: #0a0a0a; color: white; font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0;">
+              <div style="text-align: center;">
+                <h1>\u2705 Authenticated!</h1>
+                <p style="color: #888;">You can close this tab and return to your terminal.</p>
+              </div>
+            </body>
+          </html>
+        `);
+        clearTimeout(timeout);
+        server.close();
+        resolve2({ token, email, uid });
+      } catch (e) {
+        res.writeHead(500);
+        res.end("Error");
+        reject(e);
+      }
+    });
+    server.listen(CALLBACK_PORT, () => {
+      console.log(chalk6.gray(`  \u{1F310} Waiting for authentication (port ${CALLBACK_PORT})...`));
+      console.log(chalk6.gray("  If your browser doesn't open, visit:"));
+      console.log(chalk6.cyan(`  ${CLI_AUTH_URL}`));
+      console.log("");
+      open(CLI_AUTH_URL).catch(() => {
+      });
+    });
+    server.on("error", (err) => {
+      clearTimeout(timeout);
+      if (err.code === "EADDRINUSE") {
+        reject(new Error("Port 9876 is already in use. Close other instances and try again."));
+      } else {
+        reject(err);
+      }
+    });
+  });
+}
+
+// src/commands/push.ts
+import chalk7 from "chalk";
+import ora3 from "ora";
+import simpleGit from "simple-git";
+function registerPushCommand(program2) {
+  program2.command("push <message>").description("Stage all changes, commit, and push to remote").option("--no-stage", "Skip staging (commit only tracked changes)").option("-b, --branch <name>", "Push to a specific branch").action(async (message, options) => {
+    const git = simpleGit(process.cwd());
+    const isRepo = await git.checkIsRepo();
+    if (!isRepo) {
+      console.log("");
+      console.log(chalk7.red("  \u274C Not a git repository."));
+      console.log(chalk7.gray("  Run this command from inside a git project."));
+      console.log("");
+      return;
+    }
+    const spinner = ora3({
+      text: chalk7.cyan("  Preparing commit..."),
+      spinner: "dots"
+    }).start();
+    try {
+      const status = await git.status();
+      if (status.files.length === 0) {
+        spinner.stop();
+        console.log("");
+        console.log(chalk7.yellow("  \u26A0\uFE0F  Nothing to commit. Working tree is clean."));
+        console.log("");
+        return;
+      }
+      if (options.stage !== false) {
+        spinner.text = chalk7.cyan(`  Staging ${status.files.length} file(s)...`);
+        await git.add(".");
+      }
+      spinner.text = chalk7.cyan("  Committing...");
+      const commitResult = await git.commit(message);
+      const commitHash = commitResult.commit ? commitResult.commit.slice(0, 7) : "unknown";
+      spinner.text = chalk7.cyan("  Pushing to remote...");
+      const currentBranch = options.branch || (await git.branchLocal()).current;
+      try {
+        await git.push("origin", currentBranch);
+      } catch (pushError) {
+        if (pushError.message?.includes("no upstream") || pushError.message?.includes("has no upstream")) {
+          await git.push(["--set-upstream", "origin", currentBranch]);
+        } else {
+          throw pushError;
+        }
+      }
+      spinner.stop();
+      console.log("");
+      console.log(chalk7.green("  \u2705 Pushed successfully"));
+      console.log(chalk7.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+      console.log(`  ${chalk7.cyan("Commit:")}   ${commitHash}`);
+      console.log(`  ${chalk7.cyan("Branch:")}   ${currentBranch}`);
+      console.log(`  ${chalk7.cyan("Message:")}  ${message}`);
+      console.log(`  ${chalk7.cyan("Files:")}    ${status.files.length} changed`);
+      console.log(chalk7.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+      console.log("");
+      if (status.files.length <= 10) {
+        for (const file of status.files) {
+          const icon = file.index === "?" ? "\u2795" : file.index === "D" ? "\u{1F5D1}\uFE0F" : "\u270F\uFE0F";
+          console.log(chalk7.gray(`  ${icon} ${file.path}`));
+        }
+        console.log("");
+      } else {
+        console.log(chalk7.gray(`  ${status.created.length} added, ${status.modified.length} modified, ${status.deleted.length} deleted`));
+        console.log("");
+      }
+    } catch (error) {
+      spinner.stop();
+      console.log("");
+      console.log(chalk7.red(`  \u274C Push failed: ${error.message}`));
+      if (error.message?.includes("Authentication failed") || error.message?.includes("could not read Username")) {
+        console.log(chalk7.gray("  Make sure your git credentials are configured."));
+        console.log(chalk7.gray("  Run: git config --global credential.helper store"));
+      }
+      if (error.message?.includes("conflict") || error.message?.includes("rejected")) {
+        console.log(chalk7.gray("  There may be remote changes. Try: git pull --rebase"));
+      }
+      console.log("");
+    }
+  });
 }
 
 // bin/bob.ts
@@ -929,19 +1294,20 @@ var program = new Command();
 program.name("bob").description("Bob's CLI \u2014 AI coding assistant and Forge orchestrator").version("0.1.0");
 program.command("whoami").description("Show current authentication status and configuration").action(() => {
   const config = getConfig();
+  const projectName = path6.basename(process.cwd());
   console.log("");
-  console.log(chalk6.bold("  \u{1F916} Bob's CLI"));
-  console.log(chalk6.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
-  console.log(`  ${chalk6.cyan("Status:")}    ${config.loggedIn ? chalk6.green("Logged in as " + config.email) : "Not logged in"}`);
-  console.log(`  ${chalk6.cyan("Tier:")}      ${config.tier === "platform" ? "Platform (Tier 3)" : "Local-first (Tier 1)"}`);
-  console.log(`  ${chalk6.cyan("Provider:")}  ${config.provider || "Not configured"}`);
-  console.log(`  ${chalk6.cyan("Mode:")}      ${config.personalizationMode ? "Personalized" : config.consultantMode ? "Consultant" : "Standard"}`);
-  console.log(`  ${chalk6.cyan("IDRP:")}      ${config.idrp ? "Enabled" : "Disabled"}`);
-  console.log(`  ${chalk6.cyan("Project:")}   ${config.activeProject || "None"}`);
-  console.log(`  ${chalk6.cyan("Session:")}   ${config.conversationId ? config.conversationId.slice(0, 16) + "..." : "None"}`);
+  console.log(chalk8.bold("  \u{1F916} Bob's CLI"));
+  console.log(chalk8.gray("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+  console.log(`  ${chalk8.cyan("Status:")}    ${config.loggedIn ? chalk8.green("Logged in as " + config.email) : "Not logged in"}`);
+  console.log(`  ${chalk8.cyan("Tier:")}      ${config.tier === "platform" ? "Platform (Tier 3)" : "Local-first (Tier 1)"}`);
+  console.log(`  ${chalk8.cyan("Provider:")}  ${config.provider || "Not configured"}`);
+  console.log(`  ${chalk8.cyan("Mode:")}      ${config.personalizationMode ? "Personalized" : config.consultantMode ? "Consultant" : "Standard"}`);
+  console.log(`  ${chalk8.cyan("IDRP:")}      ${config.idrp ? "Enabled" : "Disabled"}`);
+  console.log(`  ${chalk8.cyan("Project:")}   ${projectName} (${process.cwd()})`);
+  console.log(`  ${chalk8.cyan("Session:")}   ${config.conversationId ? config.conversationId.slice(0, 20) + "..." : "None"}`);
   console.log("");
   if (!config.loggedIn) {
-    console.log(chalk6.gray("  Run `bob login` to authenticate."));
+    console.log(chalk8.gray("  Run `bob login` to authenticate."));
     console.log("");
   }
 });
@@ -949,4 +1315,6 @@ registerConfigCommand(program);
 registerChatCommand(program);
 registerConsultCommand(program);
 registerIndexCommand(program);
+registerLoginCommand(program);
+registerPushCommand(program);
 program.parse();

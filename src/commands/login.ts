@@ -1,0 +1,154 @@
+import { Command } from 'commander';
+import chalk from 'chalk';
+import http from 'http';
+import open from 'open';
+import { URL } from 'url';
+import * as readline from 'readline';
+import { setConfigValue } from '../core/config-store.js';
+
+const CLI_AUTH_URL = 'https://bobs-workshop.web.app/cli-auth';
+const CALLBACK_PORT = 9876;
+
+export function registerLoginCommand(program: Command): void {
+  program
+    .command('login')
+    .description('Authenticate with Bob\'s Workshop via browser')
+    .action(async () => {
+      console.log('');
+      console.log(chalk.bold.cyan('  🔐 Bob CLI — Login'));
+      console.log(chalk.gray('  ─────────────────────────────────────'));
+      console.log('');
+
+      // ─── ACKNOWLEDGMENT PROMPT ───
+      console.log(chalk.yellow('  ⚠️  Important:'));
+      console.log(chalk.gray('  • Local conversations (Tier 1) will NOT sync to the platform.'));
+      console.log(chalk.gray('  • Only NEW conversations created after login will save to Firebase.'));
+      console.log(chalk.gray('  • Your local history stays in ~/.bob/projects/ (backup via `bob backup`).'));
+      console.log(chalk.gray('  • Logging in upgrades you to Tier 3 (Platform) with full features.'));
+      console.log('');
+
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await new Promise<string>(resolve => {
+        rl.question(chalk.cyan('  Continue with login? (y/n): '), resolve);
+      });
+      rl.close();
+
+      if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
+        console.log('');
+        console.log(chalk.gray('  Login cancelled.'));
+        console.log('');
+        return;
+      }
+
+      console.log('');
+      console.log(chalk.gray('  Opening browser for authentication...'));
+      console.log('');
+
+      try {
+        const result = await startAuthFlow();
+
+        if (result) {
+          setConfigValue('authToken', result.token);
+          setConfigValue('email', result.email);
+          setConfigValue('uid', result.uid);
+          setConfigValue('loggedIn', true);
+          setConfigValue('tier', 'platform');
+
+          console.log('');
+          console.log(chalk.green(`  ✅ Logged in as ${result.email}`));
+          console.log(chalk.gray('  Tier: Platform (Tier 3)'));
+          console.log(chalk.gray('  All platform features are now available.'));
+          console.log('');
+        }
+      } catch (error: any) {
+        console.log(chalk.red(`  ❌ Login failed: ${error.message}`));
+        console.log('');
+      }
+    });
+
+  program
+    .command('logout')
+    .description('Sign out and clear stored credentials')
+    .action(() => {
+      setConfigValue('authToken', null);
+      setConfigValue('refreshToken', null);
+      setConfigValue('email', null);
+      setConfigValue('uid', null);
+      setConfigValue('loggedIn', false);
+      setConfigValue('tier', 'local');
+
+      console.log('');
+      console.log(chalk.gray('  👋 Logged out. Switched to Tier 1 (local-first).'));
+      console.log('');
+    });
+}
+
+function startAuthFlow(): Promise<{ token: string; email: string; uid: string }> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      server.close();
+      reject(new Error('Login timed out after 120 seconds. Please try again.'));
+    }, 120000);
+
+    const server = http.createServer((req, res) => {
+      if (!req.url?.startsWith('/callback')) {
+        res.writeHead(404);
+        res.end('Not found');
+        return;
+      }
+
+      try {
+        const url = new URL(req.url, `http://localhost:${CALLBACK_PORT}`);
+        const token = url.searchParams.get('token');
+        const email = url.searchParams.get('email');
+        const uid = url.searchParams.get('uid');
+
+        if (!token || !email || !uid) {
+          res.writeHead(400);
+          res.end('Missing parameters');
+          reject(new Error('Invalid callback — missing token, email, or uid.'));
+          return;
+        }
+
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(`
+          <html>
+            <body style="background: #0a0a0a; color: white; font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0;">
+              <div style="text-align: center;">
+                <h1>✅ Authenticated!</h1>
+                <p style="color: #888;">You can close this tab and return to your terminal.</p>
+              </div>
+            </body>
+          </html>
+        `);
+
+        clearTimeout(timeout);
+        server.close();
+        resolve({ token, email, uid });
+
+      } catch (e: any) {
+        res.writeHead(500);
+        res.end('Error');
+        reject(e);
+      }
+    });
+
+    server.listen(CALLBACK_PORT, () => {
+      console.log(chalk.gray(`  🌐 Waiting for authentication (port ${CALLBACK_PORT})...`));
+      console.log(chalk.gray('  If your browser doesn\'t open, visit:'));
+      console.log(chalk.cyan(`  ${CLI_AUTH_URL}`));
+      console.log('');
+
+      open(CLI_AUTH_URL).catch(() => {});
+    });
+
+    server.on('error', (err: any) => {
+      clearTimeout(timeout);
+      if (err.code === 'EADDRINUSE') {
+        reject(new Error('Port 9876 is already in use. Close other instances and try again.'));
+      } else {
+        reject(err);
+      }
+    });
+  });
+}
