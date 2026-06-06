@@ -24,6 +24,8 @@ export function getConfig(): BobConfig {
     activeProject: store.get('activeProject'),
     conversationId: store.get('conversationId'),
     activePersona: store.get('activePersona'),
+    hasSeenWelcome: store.get('hasSeenWelcome'),
+    autoMode: store.get('autoMode'),
   };
 }
 

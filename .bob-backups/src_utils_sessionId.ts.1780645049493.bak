@@ -1,0 +1,28 @@
+import { randomBytes } from "crypto";
+
+/**
+ * Generates a cryptographically secure random session ID.
+ * @param byteLength - Number of random bytes (default: 32 → 64-char hex string)
+ * @returns A hex-encoded session ID string
+ */
+export function generateSessionId(byteLength: number = 32): string {
+  return randomBytes(byteLength).toString("hex");
+}
+
+/**
+ * Generates a prefixed session ID (e.g. "sess_abc123...")
+ * @param prefix - String prefix (default: "sess")
+ * @param byteLength - Number of random bytes (default: 16 → 32-char hex)
+ */
+export function generatePrefixedSessionId(
+  prefix: string = "sess",
+  byteLength: number = 16
+): string {
+  const id = randomBytes(byteLength).toString("hex");
+  return `${prefix}_${id}`;
+}
+
+// Usage examples:
+// generateSessionId()           → "a3f9c2d1e4b7..."  (64 chars)
+// generatePrefixedSessionId()   → "sess_a3f9c2d1..."  (37 chars)
+// generatePrefixedSessionId("user", 8) → "user_a3f9c2d1"

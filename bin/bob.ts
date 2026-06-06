@@ -10,6 +10,13 @@ import { registerConsultCommand } from '../src/commands/consult.js';
 import { registerIndexCommand } from '../src/commands/index.js';
 import { registerLoginCommand } from '../src/commands/login.js';
 import { registerPushCommand } from '../src/commands/push.js';
+import { registerByokCommand } from '../src/commands/byok.js';
+import { registerConversationsCommand } from '../src/commands/conversations.js';
+import { registerForkCommand } from '../src/commands/fork.js';
+import { registerDeepDiveCommand } from '../src/commands/deepdive.js';
+import { registerAnalyseCommand } from '../src/commands/analyse.js';
+import { registerAutonomyCommand } from '../src/commands/autonomy.js';
+
 
 
 const program = new Command();
@@ -55,5 +62,13 @@ registerConsultCommand(program);
 registerIndexCommand(program);
 registerLoginCommand(program);
 registerPushCommand(program);
+registerByokCommand(program);
+registerConversationsCommand(program);
+registerForkCommand(program);
+registerDeepDiveCommand(program);
+registerAnalyseCommand(program);
+registerAutonomyCommand(program);
+
+
 
 program.parse();

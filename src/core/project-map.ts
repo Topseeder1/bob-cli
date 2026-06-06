@@ -1,7 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import * as crypto from 'crypto';
 
 const BOB_DIR = path.join(os.homedir(), '.bob');
 const PROJECTS_DIR = path.join(BOB_DIR, 'projects');
@@ -21,24 +20,15 @@ export interface TaskFile {
   error: string | null;
 }
 
-/**
- * Derives a project name from the working directory.
- */
 export function getProjectName(workingDir: string): string {
   return path.basename(workingDir);
 }
 
-/**
- * Returns the full path to the project's .bob folder.
- */
 export function getProjectDir(workingDir: string): string {
   const name = getProjectName(workingDir);
   return path.join(PROJECTS_DIR, name);
 }
 
-/**
- * Ensures the project folder structure exists.
- */
 export function ensureProjectStructure(workingDir: string): {
   projectDir: string;
   conversationsDir: string;
@@ -54,7 +44,6 @@ export function ensureProjectStructure(workingDir: string): {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   }
 
-  // Create project.json if it doesn't exist
   const metaPath = path.join(projectDir, 'project.json');
   if (!fs.existsSync(metaPath)) {
     const meta: ProjectMeta = {
@@ -69,9 +58,6 @@ export function ensureProjectStructure(workingDir: string): {
   return { projectDir, conversationsDir, analysisDir, runsDir };
 }
 
-/**
- * Creates a new analysis run with task files for each source file.
- */
 export function createAnalysisRun(workingDir: string, files: string[]): {
   runId: string;
   runDir: string;
@@ -85,7 +71,6 @@ export function createAnalysisRun(workingDir: string, files: string[]): {
   fs.mkdirSync(runDir, { recursive: true });
   fs.mkdirSync(tasksDir, { recursive: true });
 
-  // Create manifest
   const manifest = {
     runId,
     status: 'in_progress',
@@ -96,7 +81,6 @@ export function createAnalysisRun(workingDir: string, files: string[]): {
   };
   fs.writeFileSync(path.join(runDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
 
-  // Create task files
   for (const filePath of files) {
     const taskId = filePath.replace(/[\/\\]/g, '_');
     const task: TaskFile = {
@@ -112,9 +96,6 @@ export function createAnalysisRun(workingDir: string, files: string[]): {
   return { runId, runDir, tasksDir };
 }
 
-/**
- * Marks a task as complete with summary.
- */
 export function completeTask(tasksDir: string, filePath: string, summary: string): void {
   const taskId = filePath.replace(/[\/\\]/g, '_');
   const taskPath = path.join(tasksDir, `${taskId}.json`);
@@ -127,9 +108,6 @@ export function completeTask(tasksDir: string, filePath: string, summary: string
   }
 }
 
-/**
- * Updates the manifest progress count.
- */
 export function updateManifestProgress(runDir: string, completedFiles: number, status?: string): void {
   const manifestPath = path.join(runDir, 'manifest.json');
   if (fs.existsSync(manifestPath)) {
@@ -140,14 +118,10 @@ export function updateManifestProgress(runDir: string, completedFiles: number, s
   }
 }
 
-/**
- * Saves the final summaries.json for the project.
- */
 export function saveSummaries(workingDir: string, summaries: Record<string, string>): void {
   const { analysisDir } = ensureProjectStructure(workingDir);
   fs.writeFileSync(path.join(analysisDir, 'summaries.json'), JSON.stringify(summaries, null, 2));
 
-  // Update project meta
   const projectDir = getProjectDir(workingDir);
   const metaPath = path.join(projectDir, 'project.json');
   if (fs.existsSync(metaPath)) {
@@ -157,17 +131,11 @@ export function saveSummaries(workingDir: string, summaries: Record<string, stri
   }
 }
 
-/**
- * Saves the final dependencies.json for the project.
- */
 export function saveDependencies(workingDir: string, dependencies: Record<string, string[]>): void {
   const { analysisDir } = ensureProjectStructure(workingDir);
   fs.writeFileSync(path.join(analysisDir, 'dependencies.json'), JSON.stringify(dependencies, null, 2));
 }
 
-/**
- * Loads summaries for the current project. Returns null if not indexed.
- */
 export function loadSummaries(workingDir: string): Record<string, string> | null {
   const { analysisDir } = ensureProjectStructure(workingDir);
   const summariesPath = path.join(analysisDir, 'summaries.json');
@@ -179,9 +147,6 @@ export function loadSummaries(workingDir: string): Record<string, string> | null
   }
 }
 
-/**
- * Loads dependencies for the current project. Returns null if not indexed.
- */
 export function loadDependencies(workingDir: string): Record<string, string[]> | null {
   const { analysisDir } = ensureProjectStructure(workingDir);
   const depsPath = path.join(analysisDir, 'dependencies.json');
@@ -193,9 +158,6 @@ export function loadDependencies(workingDir: string): Record<string, string[]> |
   }
 }
 
-/**
- * Gets incomplete tasks from the latest run (for re-running).
- */
 export function getIncompleteTasks(workingDir: string): TaskFile[] {
   const { runsDir } = ensureProjectStructure(workingDir);
   const runs = fs.readdirSync(runsDir).sort().reverse();

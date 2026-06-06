@@ -11,6 +11,8 @@ const VALID_KEYS = [
   'idrpFilter',
   'activeProject',
   'activePersona',
+  'hasSeenWelcome',
+  'autoMode',
 ];
 
 const VALID_PROVIDERS = ['claude', 'gemini', 'openai', 'grok', 'local'];
@@ -37,8 +39,10 @@ export function registerConfigCommand(program: Command): void {
       console.log(`  ${chalk.cyan('Local Endpoint:')} ${config.localEndpoint || 'Not set'}`);
       console.log(`  ${chalk.cyan('IDRP:')}           ${config.idrp ? 'Enabled' : 'Disabled'}`);
       console.log(`  ${chalk.cyan('IDRP Filter:')}    ${config.idrpFilter}`);
+      console.log(`  ${chalk.cyan('Auto Mode:')}      ${config.autoMode ? 'Enabled' : 'Disabled'}`);
       console.log(`  ${chalk.cyan('Active Project:')} ${config.activeProject || 'None'}`);
       console.log(`  ${chalk.cyan('Active Persona:')} ${config.activePersona || 'None'}`);
+      console.log(`  ${chalk.cyan('Has Seen Welcome:')} ${config.hasSeenWelcome}`);
       console.log('');
       console.log(chalk.gray(`  Config file: ${getConfigPath()}`));
       console.log('');
@@ -69,6 +73,12 @@ export function registerConfigCommand(program: Command): void {
       // Handle boolean values
       let finalValue: any = value;
       if (key === 'idrp') {
+        finalValue = value === 'true' || value === 'enabled' || value === 'on';
+      }
+      if (key === 'hasSeenWelcome') {
+        finalValue = value === 'true';
+      }
+      if (key === 'autoMode') {
         finalValue = value === 'true' || value === 'enabled' || value === 'on';
       }
       if (key === 'tier') {

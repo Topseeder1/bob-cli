@@ -1,6 +1,8 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as readline from 'readline';
 import { getConfig, setConfigValue } from '../core/config-store.js';
 import { callCloudFunction } from '../core/api-client.js';
@@ -11,6 +13,10 @@ import { renderMarkdown } from '../ui/renderer.js';
 import { saveMessage } from '../core/conversation-store.js';
 import { loadSummaries } from '../core/project-map.js';
 import { getRelevantFileContents } from '../core/file-retrieval.js';
+import { extractProposedFile, proposeAndWriteFile, stripCodeBlockFromResponse } from '../core/file-writer.js';
+import { enterDeepDive } from './deepdive.js';
+import { renderSessionHeader } from '../ui/session-header.js';
+import { showWelcomeIfFirstRun } from '../ui/welcome.js';
 
 export function registerChatCommand(program: Command): void {
   program
@@ -24,14 +30,12 @@ export function registerChatCommand(program: Command): void {
     .action(async (message: string | undefined, options: { file?: string; context?: boolean; personalized?: boolean; new?: boolean; interactive?: boolean }) => {
       const config = getConfig();
 
-      // ─── CONVERSATION ID ───
       let conversationId = config.conversationId;
       if (options.new || !conversationId) {
         conversationId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         setConfigValue('conversationId', conversationId);
       }
 
-      // ─── BUILD LOCAL CONTEXT ───
       let localContext = '';
       if (options.context !== false) {
         localContext = buildLocalContext(process.cwd());
@@ -45,13 +49,11 @@ export function registerChatCommand(program: Command): void {
         }
       }
 
-      // ─── INTERACTIVE MODE ───
       if (options.interactive || !message) {
         await runInteractiveSession(config, conversationId, localContext, options.personalized || false, 'standard');
         return;
       }
 
-      // ─── SINGLE MESSAGE MODE ───
       await sendMessage(message, config, conversationId, localContext, options.personalized || false, 'standard', []);
     });
 }
@@ -76,26 +78,27 @@ async function sendMessage(
   try {
     let response: string;
 
-    // ─── LOCAL MODE ───
+    let relevantFiles = '';
+    if (config.localEndpoint) {
+      spinner.text = chalk.cyan('  Bob is finding relevant files...');
+      const retrieval = await getRelevantFileContents(message, config.localEndpoint);
+      relevantFiles = retrieval.fileContents;
+      selectedFiles = retrieval.selectedFiles;
+    }
+
+    spinner.text = chalk.cyan('  Bob is thinking...');
+
+    let fullContext = localContext;
+    if (relevantFiles) {
+      fullContext += `\n\n${relevantFiles}`;
+    }
+
     if (config.provider === 'local') {
       if (!config.localEndpoint) {
         spinner.stop();
         console.log(chalk.red('  ❌ No local endpoint configured.'));
         console.log(chalk.gray('  Run `bob config set localEndpoint http://127.0.0.1:11434/api/chat`'));
         return '';
-      }
-
-      // ─── TWO-STEP RETRIEVAL ───
-      spinner.text = chalk.cyan('  Bob is finding relevant files...');
-      const retrieval = await getRelevantFileContents(message, config.localEndpoint!);
-      const relevantFiles = retrieval.fileContents;
-      selectedFiles = retrieval.selectedFiles;
-
-      spinner.text = chalk.cyan('  Bob is thinking...');
-
-      let fullContext = localContext;
-      if (relevantFiles) {
-        fullContext += `\n\n${relevantFiles}`;
       }
 
       const messages: LocalChatMessage[] = [
@@ -106,7 +109,6 @@ async function sendMessage(
 
       response = await callLocalModel(config.localEndpoint, messages);
 
-      // ─── AUTO-SAVE (Tier 1 local) ───
       saveMessage(conversationId, {
         sender: 'user',
         message: message,
@@ -121,7 +123,6 @@ async function sendMessage(
         type: 'text',
       }, { tier: 'local', provider: config.provider, mode });
 
-    // ─── PERSONALIZATION MODE (Tier 3) ───
     } else if (personalized || config.personalizationMode) {
       if (!config.loggedIn || !config.authToken) {
         spinner.stop();
@@ -135,13 +136,12 @@ async function sendMessage(
         conversationId: conversationId,
         userMessage: message,
         useContext: true,
-        localContext: localContext || null,
+        localContext: fullContext || null,
       });
 
       response = result?.text || result?.response || result?.message || 'No response received.';
       hasProjectContext = result?.hasProjectContext ?? null;
 
-    // ─── STANDARD PLATFORM MODE ───
     } else {
       if (!config.loggedIn || !config.authToken) {
         spinner.stop();
@@ -160,7 +160,7 @@ async function sendMessage(
         useOrgContext: false,
         isPassalongActive: false,
         linkedConvoId: null,
-        localContext: localContext || null,
+        localContext: fullContext || null,
       });
 
       response = result?.text || result?.response || result?.message || 'No response received.';
@@ -169,8 +169,14 @@ async function sendMessage(
 
     spinner.stop();
 
-    // ─── RENDER ───
-    const rendered = renderMarkdown(response);
+    const proposed = extractProposedFile(response);
+    let displayResponse = response;
+
+    if (proposed) {
+      displayResponse = stripCodeBlockFromResponse(response);
+    }
+
+    const rendered = renderMarkdown(displayResponse);
     console.log('');
     console.log(chalk.gray('  ─────────────────────────────────────'));
     console.log(chalk.bold.cyan('  🤖 Bob:'));
@@ -183,7 +189,6 @@ async function sendMessage(
       console.log(chalk.gray(`  📂 Referenced: ${selectedFiles.join(', ')}`));
     }
 
-    // ─── TIER 3 FOOTER ───
     if (config.tier === 'platform' && config.provider !== 'local') {
       console.log(chalk.gray(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`));
       if (hasProjectContext === false) {
@@ -194,6 +199,10 @@ async function sendMessage(
 
     console.log(chalk.gray('  ─────────────────────────────────────'));
     console.log('');
+
+    if (proposed) {
+      await proposeAndWriteFile(proposed);
+    }
 
     return response;
 
@@ -211,23 +220,13 @@ async function runInteractiveSession(
   personalized: boolean,
   mode: 'standard' | 'consultant' | 'personalized',
 ): Promise<void> {
-  const summaries = loadSummaries(process.cwd());
-  const isIndexed = summaries && Object.keys(summaries).length > 0;
+  // Show welcome only on first install
+  if (!config.hasSeenWelcome) {
+    await showWelcomeIfFirstRun();
+    setConfigValue('hasSeenWelcome', true);
+  }
 
-  console.log('');
-  console.log(chalk.bold.cyan('  🤖 Bob — Interactive Session'));
-  console.log(chalk.gray('  ─────────────────────────────────────'));
-  if (isIndexed) {
-    console.log(chalk.green(`  📚 Project indexed (${Object.keys(summaries!).length} files). Intelligent file selection active.`));
-  } else {
-    console.log(chalk.yellow('  ⚠️  Project not indexed. Run `bob index` for smarter responses.'));
-  }
-  if (config.tier === 'platform' && config.provider !== 'local') {
-    console.log(chalk.gray(`  🔗 ${conversationId}`));
-  }
-  console.log(chalk.gray('  Commands: /exit  /new  /clear'));
-  console.log(chalk.gray('  ─────────────────────────────────────'));
-  console.log('');
+  renderSessionHeader('chat');
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -245,7 +244,6 @@ async function runInteractiveSession(
         return;
       }
 
-      // ─── SLASH COMMANDS ───
       if (trimmed === '/exit' || trimmed === '/quit') {
         console.log('');
         console.log(chalk.gray(`  💾 Session: ${conversationId.slice(0, 24)}...`));
@@ -270,9 +268,70 @@ async function runInteractiveSession(
 
       if (trimmed === '/clear') {
         console.clear();
-        console.log(chalk.bold.cyan('  🤖 Bob — Interactive Session'));
-        console.log(chalk.gray('  ─────────────────────────────────────'));
+        renderSessionHeader('chat');
+        prompt();
+        return;
+      }
+
+      // ─── /include <path> ───
+      if (trimmed.startsWith('/include ')) {
+        const filePath = trimmed.slice(9).trim();
+        const content = readFileContent(filePath);
+        if (content) {
+          localContext += `\n\n--- INCLUDED FILE: ${filePath} ---\n${content}\n--- END FILE ---`;
+          const lineCount = content.split('\n').length;
+          console.log(chalk.green(`  📄 Loaded: ${filePath} (${lineCount} lines)`));
+        } else {
+          console.log(chalk.red(`  ❌ Could not read: ${filePath}`));
+        }
         console.log('');
+        prompt();
+        return;
+      }
+
+      // ─── /delete <path> ───
+      if (trimmed.startsWith('/delete ')) {
+        const filePath = trimmed.slice(8).trim();
+        const absolutePath = path.resolve(process.cwd(), filePath);
+
+        if (!fs.existsSync(absolutePath)) {
+          console.log(chalk.red(`  ❌ File not found: ${filePath}`));
+          console.log('');
+          prompt();
+          return;
+        }
+
+        const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const confirm = await new Promise<string>(resolve => {
+          rl2.question(chalk.red(`  🗑️  Delete ${filePath}? This cannot be undone. (y/n): `), resolve);
+        });
+        rl2.close();
+
+        if (confirm.toLowerCase() === 'y' || confirm.toLowerCase() === 'yes') {
+          try {
+            const backupDir = path.join(process.cwd(), '.bob-backups');
+            if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+            const timestamp = Date.now();
+            const backupName = filePath.replace(/[\/\\]/g, '_') + `.${timestamp}.deleted`;
+            fs.copyFileSync(absolutePath, path.join(backupDir, backupName));
+
+            fs.unlinkSync(absolutePath);
+            console.log(chalk.green(`  ✅ Deleted: ${filePath}`));
+            console.log(chalk.gray(`  📦 Backup saved to .bob-backups/ (recoverable)`));
+          } catch (e: any) {
+            console.log(chalk.red(`  ❌ Delete failed: ${e.message}`));
+          }
+        } else {
+          console.log(chalk.gray('  Cancelled.'));
+        }
+        console.log('');
+        prompt();
+        return;
+      }
+
+      // ─── /deepdive ───
+      if (trimmed === '/deepdive') {
+        await enterDeepDive(config, conversationId, rl);
         prompt();
         return;
       }

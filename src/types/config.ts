@@ -15,6 +15,7 @@ export interface BobConfig {
   // Mode
   personalizationMode: boolean;
   consultantMode: boolean;
+  autoMode: boolean;
 
   // IDRP
   idrp: boolean;
@@ -26,6 +27,9 @@ export interface BobConfig {
 
   // Persona
   activePersona: string | null;
+
+  // First run
+  hasSeenWelcome: boolean;
 }
 
 export const DEFAULT_CONFIG: BobConfig = {
@@ -40,9 +44,11 @@ export const DEFAULT_CONFIG: BobConfig = {
   localEndpoint: null,
   personalizationMode: false,
   consultantMode: false,
+  autoMode: false,
   idrp: false,
   idrpFilter: 'free',
   activeProject: null,
   conversationId: null,
   activePersona: null,
+  hasSeenWelcome: false,
 };
