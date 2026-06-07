@@ -4,6 +4,7 @@ import ora from 'ora';
 import * as readline from 'readline';
 import { getConfig, setConfigValue } from '../core/config-store.js';
 import { callCloudFunction } from '../core/api-client.js';
+import { callLocalModel, LocalChatMessage } from '../ai/providers/local.js';
 import { renderMarkdown } from '../ui/renderer.js';
 import { startDeepDiveAnimation } from '../ui/animations/deep-dive.js';
 
@@ -47,7 +48,7 @@ export function registerDeepDiveCommand(program: Command): void {
 
         if (dives.length === 0) {
           console.log(DIVE_BORDER('  ║') + chalk.gray('  No deep dives yet.                      ') + DIVE_BORDER('║'));
-          console.log(DIVE_BORDER('  ║') + chalk.gray('  Use /deepdive in interactive mode.       ') + DIVE_BORDER('║'));
+          console.log(DIVE_BORDER('  ║') + chalk.gray('  Use `bob deepdive` to create one.       ') + DIVE_BORDER('║'));
         } else {
           for (const dive of dives) {
             const preview = (dive.initiatingPrompt || 'No prompt').slice(0, 35);
@@ -59,6 +60,10 @@ export function registerDeepDiveCommand(program: Command): void {
 
         console.log(DIVE_BORDER('  ╚══════════════════════════════════════════╝'));
         console.log('');
+        console.log(chalk.gray('  Commands:'));
+        console.log(chalk.gray('    bob deepdive        — Create a new deep dive'));
+        console.log(chalk.gray('    bob deepdives-join  — Re-enter an existing deep dive'));
+        console.log('');
 
       } catch (error: any) {
         spinner.stop();
@@ -66,11 +71,126 @@ export function registerDeepDiveCommand(program: Command): void {
         console.log('');
       }
     });
+
+  // bob deepdives-join
+  program
+    .command('deepdives-join')
+    .description('Re-enter an existing deep dive')
+    .action(async () => {
+      const config = getConfig();
+
+      if (!config.loggedIn || !config.authToken) {
+        console.log('');
+        console.log(chalk.red('  ❌ Not logged in. Deep dives require Tier 3.'));
+        console.log('');
+        return;
+      }
+
+      if (!config.conversationId) {
+        console.log('');
+        console.log(chalk.red('  ❌ No active conversation.'));
+        console.log('');
+        return;
+      }
+
+      const spinner = ora({ text: chalk.cyan('  Loading deep dives...'), spinner: 'dots' }).start();
+
+      try {
+        const result = await callCloudFunction('listCLIDeepDives', {
+          conversationId: config.conversationId,
+        });
+
+        spinner.stop();
+        const dives = result.deepDives || [];
+
+        if (dives.length === 0) {
+          console.log('');
+          console.log(chalk.yellow('  ⚠️  No deep dives in this conversation.'));
+          console.log(chalk.gray('  Use `bob deepdive` to create one.'));
+          console.log('');
+          return;
+        }
+
+        console.log('');
+        console.log(DIVE_BORDER('  ╔══════════════════════════════════════════╗'));
+        console.log(DIVE_BORDER('  ║') + chalk.bold.blue('  🤿 Select a deep dive to re-enter       ') + DIVE_BORDER('║'));
+        console.log(DIVE_BORDER('  ╠══════════════════════════════════════════╣'));
+
+        for (let i = 0; i < dives.length; i++) {
+          const dive = dives[i];
+          const preview = (dive.initiatingPrompt || 'No prompt').slice(0, 35);
+          const msgs = dive.messageCount || 0;
+          console.log(DIVE_BORDER('  ║') + `  ${chalk.cyan(String(i + 1).padStart(2))}. ${chalk.white(preview)}${preview.length >= 35 ? '...' : ''}`);
+          console.log(DIVE_BORDER('  ║') + chalk.gray(`      ${msgs} messages | ${dive.status || 'active'}`));
+        }
+
+        console.log(DIVE_BORDER('  ╚══════════════════════════════════════════╝'));
+        console.log('');
+
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const answer = await new Promise<string>(resolve => {
+          rl.question(chalk.blue('  Select (1-' + dives.length + ') or 0 to cancel: '), resolve);
+        });
+
+        const selection = parseInt(answer.trim());
+
+        if (isNaN(selection) || selection === 0 || selection < 1 || selection > dives.length) {
+          rl.close();
+          console.log(chalk.gray('  Cancelled.'));
+          return;
+        }
+
+        const selectedDive = dives[selection - 1];
+        const parentMessageId = selectedDive.parentMessageId;
+        const initiatingPrompt = selectedDive.initiatingPrompt || 'Deep dive session';
+
+        // Play animation on re-entry
+        const animation = startDeepDiveAnimation();
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        animation.stop();
+        await new Promise(resolve => setTimeout(resolve, 300));
+
+        await runDeepDiveSession(config, config.conversationId!, parentMessageId, initiatingPrompt, rl);
+        rl.close();
+
+      } catch (error: any) {
+        spinner.stop();
+        console.log(chalk.red(`  ❌ ${error.message}`));
+        console.log('');
+      }
+    });
+
+  // bob deepdive — create new
+  program
+    .command('deepdive')
+    .description('Create a new deep dive on a Bob message')
+    .action(async () => {
+      const config = getConfig();
+
+      if (!config.loggedIn || !config.authToken) {
+        console.log('');
+        console.log(chalk.red('  ❌ Not logged in. Deep dives require Tier 3.'));
+        console.log(chalk.gray('  Run `bob login` to authenticate.'));
+        console.log('');
+        return;
+      }
+
+      if (!config.conversationId) {
+        console.log('');
+        console.log(chalk.red('  ❌ No active conversation.'));
+        console.log(chalk.gray('  Join one with `bob conversations join` first.'));
+        console.log('');
+        return;
+      }
+
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      await enterDeepDive(config, config.conversationId!, rl);
+      rl.close();
+    });
 }
 
 /**
- * Handles deep dive entry from interactive mode.
- * Called when user types /deepdive in chat interactive session.
+ * Handles deep dive entry from interactive mode or standalone command.
  */
 export async function enterDeepDive(
   config: any,
@@ -82,7 +202,6 @@ export async function enterDeepDive(
     return;
   }
 
-  // ─── 1. FETCH RECENT BOB MESSAGES ───
   const spinner = ora({ text: chalk.cyan('  Loading messages...'), spinner: 'dots' }).start();
 
   let messages: any[];
@@ -104,7 +223,6 @@ export async function enterDeepDive(
     return;
   }
 
-  // ─── 2. SHOW MESSAGE LIST ───
   console.log('');
   console.log(DIVE_BORDER('  ╔══════════════════════════════════════════╗'));
   console.log(DIVE_BORDER('  ║') + chalk.bold.blue('  🤿 Select a message to deep dive on     ') + DIVE_BORDER('║'));
@@ -119,7 +237,6 @@ export async function enterDeepDive(
   console.log(DIVE_BORDER('  ╚══════════════════════════════════════════╝'));
   console.log('');
 
-  // ─── 3. USER SELECTS ───
   const answer = await new Promise<string>(resolve => {
     rl.question(chalk.blue('  Select (1-' + messages.length + ') or 0 to cancel: '), resolve);
   });
@@ -134,7 +251,7 @@ export async function enterDeepDive(
   const parentMessageId = selectedMessage.id;
   const initiatingPrompt = selectedMessage.message.slice(0, 100);
 
-  // ─── 4. INITIATE DEEP DIVE WITH ANIMATION ───
+  // Initiate with animation
   const animation = startDeepDiveAnimation();
 
   const divePromise = callCloudFunction('initiateCLIDeepDive', {
@@ -146,10 +263,8 @@ export async function enterDeepDive(
   try {
     await divePromise;
     animation.stop();
-    // Small delay to let final frame render
     await new Promise(resolve => setTimeout(resolve, 300));
 
-    // ─── 5. ENTER DEEP DIVE LOOP ───
     await runDeepDiveSession(config, conversationId, parentMessageId, initiatingPrompt, rl);
 
   } catch (error: any) {
@@ -160,8 +275,8 @@ export async function enterDeepDive(
 }
 
 /**
- * The deep dive interactive loop.
- * Returns a Promise that resolves when the user surfaces or promotes.
+ * Deep dive interactive session with local model support.
+ * Saves user messages to Firestore BEFORE calling generateDeepDiveResponse.
  */
 async function runDeepDiveSession(
   config: any,
@@ -171,11 +286,15 @@ async function runDeepDiveSession(
   rl: readline.Interface,
 ): Promise<void> {
   const previewText = initiatingPrompt.slice(0, 50) + (initiatingPrompt.length > 50 ? '...' : '');
+  const isLocalProvider = config.provider === 'local' && config.localEndpoint;
 
   console.log('');
   console.log(DIVE_BORDER('  ╔══════════════════════════════════════════════════════╗'));
   console.log(DIVE_BORDER('  ║') + chalk.bold.blue('  🤿 DEEP DIVE                                       ') + DIVE_BORDER('║'));
   console.log(DIVE_BORDER('  ║') + chalk.gray(`  On: "${previewText}"`));
+  if (isLocalProvider) {
+    console.log(DIVE_BORDER('  ║') + chalk.gray('  Provider: Local model (sovereign handoff)'));
+  }
   console.log(DIVE_BORDER('  ╠══════════════════════════════════════════════════════╣'));
   console.log(DIVE_BORDER('  ║') + chalk.gray('  Commands: /surface  /promote  /clear                ') + DIVE_BORDER('║'));
   console.log(DIVE_BORDER('  ╚══════════════════════════════════════════════════════╝'));
@@ -191,7 +310,7 @@ async function runDeepDiveSession(
           return;
         }
 
-        // ─── /surface or /exit — exit deep dive ───
+        // ─── /surface or /exit ───
         if (trimmed === '/surface' || trimmed === '/exit') {
           console.log('');
           console.log(DIVE_BORDER('  ╔══════════════════════════════════════════╗'));
@@ -203,7 +322,7 @@ async function runDeepDiveSession(
           return;
         }
 
-        // ─── /promote — summarize and push back ───
+        // ─── /promote ───
         if (trimmed === '/promote') {
           const promoSpinner = ora({ text: chalk.blue('  Promoting deep dive...'), spinner: 'dots' }).start();
 
@@ -238,28 +357,75 @@ async function runDeepDiveSession(
           return;
         }
 
-        // ─── SEND MESSAGE TO DEEP DIVE ───
+        // ─── SEND MESSAGE ───
         const msgSpinner = ora({ text: chalk.blue('  🤿 Bob is diving deep...'), spinner: 'dots' }).start();
 
         try {
-          await callCloudFunction('generateDeepDiveResponse', {
+          // STEP 1: Save USER message to Firestore sandbox thread FIRST
+          // (Mirrors what DeepDiveChatWidget does on the web app)
+          await callCloudFunction('saveCLIDeepDiveMessage', {
             conversationId: conversationId,
             parentMessageId: parentMessageId,
-            userMessage: trimmed,
-            isLocalModel: false,
-            activePersonaId: null,
+            message: trimmed,
+            sender: 'user',
           });
+
+          let responseText: string;
+
+          if (isLocalProvider) {
+            // ─── LOCAL MODEL: Sovereign Handoff ───
+            // Step 2: Get the assembled master prompt from the backend
+            const handoffResult = await callCloudFunction('generateDeepDiveResponse', {
+              conversationId: conversationId,
+              parentMessageId: parentMessageId,
+              userMessage: trimmed,
+              isLocalModel: true,
+              activePersonaId: null,
+            });
+
+            if (!handoffResult?.isHandoff || !handoffResult?.masterPrompt) {
+              throw new Error('Handoff failed — no master prompt returned.');
+            }
+
+            // Step 3: Send master prompt to local model
+            const localMessages: LocalChatMessage[] = [
+              { role: 'user', content: handoffResult.masterPrompt },
+            ];
+
+            responseText = await callLocalModel(config.localEndpoint!, localMessages);
+
+            // Step 4: Save Bob's LOCAL response to Firestore sandbox thread
+            await callCloudFunction('saveCLIDeepDiveMessage', {
+              conversationId: conversationId,
+              parentMessageId: parentMessageId,
+              message: responseText,
+              sender: 'bob',
+              origin: 'local-sovereign',
+            });
+
+          } else {
+            // ─── PLATFORM MODEL: Full cloud execution ───
+            // generateDeepDiveResponse handles its own response persistence
+            await callCloudFunction('generateDeepDiveResponse', {
+              conversationId: conversationId,
+              parentMessageId: parentMessageId,
+              userMessage: trimmed,
+              isLocalModel: false,
+              activePersonaId: null,
+            });
+
+            // Fetch the latest response
+            const latestResult = await callCloudFunction('listCLIDeepDives', {
+              conversationId: conversationId,
+              action: 'getLatestSandboxMessage',
+              parentMessageId: parentMessageId,
+            });
+
+            responseText = latestResult?.message || 'Deep dive response saved.';
+          }
 
           msgSpinner.stop();
 
-          // Fetch the latest Bob response from sandbox
-          const latestResult = await callCloudFunction('listCLIDeepDives', {
-            conversationId: conversationId,
-            action: 'getLatestSandboxMessage',
-            parentMessageId: parentMessageId,
-          });
-
-          const responseText = latestResult?.message || 'Deep dive response saved.';
           const rendered = renderMarkdown(responseText);
 
           console.log('');

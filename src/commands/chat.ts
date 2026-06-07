@@ -7,7 +7,7 @@ import * as readline from 'readline';
 import { getConfig, setConfigValue } from '../core/config-store.js';
 import { callCloudFunction } from '../core/api-client.js';
 import { callLocalModel, LocalChatMessage } from '../ai/providers/local.js';
-import { STANDARD_STYLE_PROMPT } from '../ai/persona.js';
+import { buildPersonalizedPrompt } from '../ai/persona.js';
 import { buildLocalContext, readFileContent } from '../core/context-builder.js';
 import { renderMarkdown } from '../ui/renderer.js';
 import { saveMessage } from '../core/conversation-store.js';
@@ -67,10 +67,7 @@ async function sendMessage(
   mode: 'standard' | 'consultant' | 'personalized',
   history: LocalChatMessage[],
 ): Promise<string> {
-  const spinner = ora({
-    text: chalk.cyan('  Bob is thinking...'),
-    spinner: 'dots',
-  }).start();
+  const spinner = ora({ text: chalk.cyan('  Bob is thinking...'), spinner: 'dots' }).start();
 
   let selectedFiles: string[] = [];
   let hasProjectContext: boolean | null = null;
@@ -101,27 +98,17 @@ async function sendMessage(
         return '';
       }
 
+      const systemPrompt = buildPersonalizedPrompt('standard');
       const messages: LocalChatMessage[] = [
-        { role: 'system', content: STANDARD_STYLE_PROMPT + (fullContext ? `\n\n## PROJECT CONTEXT ##\n${fullContext}` : '') },
+        { role: 'system', content: systemPrompt + (fullContext ? `\n\n## PROJECT CONTEXT ##\n${fullContext}` : '') },
         ...history,
         { role: 'user', content: message },
       ];
 
       response = await callLocalModel(config.localEndpoint, messages);
 
-      saveMessage(conversationId, {
-        sender: 'user',
-        message: message,
-        timestamp: new Date().toISOString(),
-        type: 'text',
-      }, { tier: 'local', provider: config.provider, mode });
-
-      saveMessage(conversationId, {
-        sender: 'bob',
-        message: response,
-        timestamp: new Date().toISOString(),
-        type: 'text',
-      }, { tier: 'local', provider: config.provider, mode });
+      saveMessage(conversationId, { sender: 'user', message: message, timestamp: new Date().toISOString(), type: 'text' }, { tier: 'local', provider: config.provider, mode });
+      saveMessage(conversationId, { sender: 'bob', message: response, timestamp: new Date().toISOString(), type: 'text' }, { tier: 'local', provider: config.provider, mode });
 
     } else if (personalized || config.personalizationMode) {
       if (!config.loggedIn || !config.authToken) {
@@ -130,15 +117,7 @@ async function sendMessage(
         return '';
       }
 
-      const result = await callCloudFunction('getPersonalizedResponse', {
-        userEmail: config.email,
-        userId: config.uid,
-        conversationId: conversationId,
-        userMessage: message,
-        useContext: true,
-        localContext: fullContext || null,
-      });
-
+      const result = await callCloudFunction('getPersonalizedResponse', { userEmail: config.email, userId: config.uid, conversationId, userMessage: message, useContext: true, localContext: fullContext || null });
       response = result?.text || result?.response || result?.message || 'No response received.';
       hasProjectContext = result?.hasProjectContext ?? null;
 
@@ -150,19 +129,7 @@ async function sendMessage(
         return '';
       }
 
-      const result = await callCloudFunction('chatWithBobStream', {
-        userEmail: config.email,
-        userId: config.uid,
-        conversationId: conversationId,
-        userMessage: message,
-        useContext: true,
-        consultantModelId: 'gemini-2.5-flash',
-        useOrgContext: false,
-        isPassalongActive: false,
-        linkedConvoId: null,
-        localContext: fullContext || null,
-      });
-
+      const result = await callCloudFunction('chatWithBobStream', { userEmail: config.email, userId: config.uid, conversationId, userMessage: message, useContext: true, consultantModelId: 'gemini-2.5-flash', useOrgContext: false, isPassalongActive: false, linkedConvoId: null, localContext: fullContext || null });
       response = result?.text || result?.response || result?.message || 'No response received.';
       hasProjectContext = result?.hasProjectContext ?? null;
     }
@@ -171,23 +138,16 @@ async function sendMessage(
 
     const proposed = extractProposedFile(response);
     let displayResponse = response;
-
-    if (proposed) {
-      displayResponse = stripCodeBlockFromResponse(response);
-    }
+    if (proposed) { displayResponse = stripCodeBlockFromResponse(response); }
 
     const rendered = renderMarkdown(displayResponse);
     console.log('');
     console.log(chalk.gray('  ─────────────────────────────────────'));
     console.log(chalk.bold.cyan('  🤖 Bob:'));
     console.log('');
-    for (const line of rendered.split('\n')) {
-      console.log(`  ${line}`);
-    }
+    for (const line of rendered.split('\n')) { console.log(`  ${line}`); }
     console.log('');
-    if (selectedFiles.length > 0) {
-      console.log(chalk.gray(`  📂 Referenced: ${selectedFiles.join(', ')}`));
-    }
+    if (selectedFiles.length > 0) { console.log(chalk.gray(`  📂 Referenced: ${selectedFiles.join(', ')}`)); }
 
     if (config.tier === 'platform' && config.provider !== 'local') {
       console.log(chalk.gray(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`));
@@ -200,9 +160,7 @@ async function sendMessage(
     console.log(chalk.gray('  ─────────────────────────────────────'));
     console.log('');
 
-    if (proposed) {
-      await proposeAndWriteFile(proposed);
-    }
+    if (proposed) { await proposeAndWriteFile(proposed); }
 
     return response;
 
@@ -213,137 +171,63 @@ async function sendMessage(
   }
 }
 
-async function runInteractiveSession(
-  config: any,
-  conversationId: string,
-  localContext: string,
-  personalized: boolean,
-  mode: 'standard' | 'consultant' | 'personalized',
-): Promise<void> {
-  // Show welcome only on first install
-  if (!config.hasSeenWelcome) {
-    await showWelcomeIfFirstRun();
-    setConfigValue('hasSeenWelcome', true);
-  }
-
+async function runInteractiveSession(config: any, conversationId: string, localContext: string, personalized: boolean, mode: 'standard' | 'consultant' | 'personalized'): Promise<void> {
+  if (!config.hasSeenWelcome) { await showWelcomeIfFirstRun(); setConfigValue('hasSeenWelcome', true); }
   renderSessionHeader('chat');
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const history: LocalChatMessage[] = [];
 
   const prompt = (): void => {
     rl.question(chalk.green('  You: '), async (input) => {
       const trimmed = input.trim();
-
-      if (!trimmed) {
-        prompt();
-        return;
-      }
+      if (!trimmed) { prompt(); return; }
 
       if (trimmed === '/exit' || trimmed === '/quit') {
         console.log('');
         console.log(chalk.gray(`  💾 Session: ${conversationId.slice(0, 24)}...`));
-        if (config.tier === 'platform' && config.provider !== 'local') {
-          console.log(chalk.gray(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`));
-        }
+        if (config.tier === 'platform' && config.provider !== 'local') { console.log(chalk.gray(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`)); }
         console.log(chalk.gray('  👋 See you next time.'));
         console.log('');
         rl.close();
         return;
       }
 
-      if (trimmed === '/new') {
-        history.length = 0;
-        conversationId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        setConfigValue('conversationId', conversationId);
-        console.log(chalk.cyan('  🔄 New session started.'));
-        console.log('');
-        prompt();
-        return;
-      }
+      if (trimmed === '/new') { history.length = 0; conversationId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; setConfigValue('conversationId', conversationId); console.log(chalk.cyan('  🔄 New session started.')); console.log(''); prompt(); return; }
+      if (trimmed === '/clear') { console.clear(); renderSessionHeader('chat'); prompt(); return; }
 
-      if (trimmed === '/clear') {
-        console.clear();
-        renderSessionHeader('chat');
-        prompt();
-        return;
-      }
-
-      // ─── /include <path> ───
       if (trimmed.startsWith('/include ')) {
         const filePath = trimmed.slice(9).trim();
         const content = readFileContent(filePath);
-        if (content) {
-          localContext += `\n\n--- INCLUDED FILE: ${filePath} ---\n${content}\n--- END FILE ---`;
-          const lineCount = content.split('\n').length;
-          console.log(chalk.green(`  📄 Loaded: ${filePath} (${lineCount} lines)`));
-        } else {
-          console.log(chalk.red(`  ❌ Could not read: ${filePath}`));
-        }
-        console.log('');
-        prompt();
-        return;
+        if (content) { localContext += `\n\n--- INCLUDED FILE: ${filePath} ---\n${content}\n--- END FILE ---`; console.log(chalk.green(`  📄 Loaded: ${filePath} (${content.split('\n').length} lines)`)); }
+        else { console.log(chalk.red(`  ❌ Could not read: ${filePath}`)); }
+        console.log(''); prompt(); return;
       }
 
-      // ─── /delete <path> ───
       if (trimmed.startsWith('/delete ')) {
         const filePath = trimmed.slice(8).trim();
         const absolutePath = path.resolve(process.cwd(), filePath);
-
-        if (!fs.existsSync(absolutePath)) {
-          console.log(chalk.red(`  ❌ File not found: ${filePath}`));
-          console.log('');
-          prompt();
-          return;
-        }
-
+        if (!fs.existsSync(absolutePath)) { console.log(chalk.red(`  ❌ File not found: ${filePath}`)); console.log(''); prompt(); return; }
         const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
-        const confirm = await new Promise<string>(resolve => {
-          rl2.question(chalk.red(`  🗑️  Delete ${filePath}? This cannot be undone. (y/n): `), resolve);
-        });
+        const confirm = await new Promise<string>(resolve => { rl2.question(chalk.red(`  🗑️  Delete ${filePath}? (y/n): `), resolve); });
         rl2.close();
-
         if (confirm.toLowerCase() === 'y' || confirm.toLowerCase() === 'yes') {
           try {
             const backupDir = path.join(process.cwd(), '.bob-backups');
             if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
-            const timestamp = Date.now();
-            const backupName = filePath.replace(/[\/\\]/g, '_') + `.${timestamp}.deleted`;
-            fs.copyFileSync(absolutePath, path.join(backupDir, backupName));
-
+            fs.copyFileSync(absolutePath, path.join(backupDir, filePath.replace(/[\/\\]/g, '_') + `.${Date.now()}.deleted`));
             fs.unlinkSync(absolutePath);
             console.log(chalk.green(`  ✅ Deleted: ${filePath}`));
-            console.log(chalk.gray(`  📦 Backup saved to .bob-backups/ (recoverable)`));
-          } catch (e: any) {
-            console.log(chalk.red(`  ❌ Delete failed: ${e.message}`));
-          }
-        } else {
-          console.log(chalk.gray('  Cancelled.'));
-        }
-        console.log('');
-        prompt();
-        return;
+            console.log(chalk.gray(`  📦 Backup saved to .bob-backups/`));
+          } catch (e: any) { console.log(chalk.red(`  ❌ Delete failed: ${e.message}`)); }
+        } else { console.log(chalk.gray('  Cancelled.')); }
+        console.log(''); prompt(); return;
       }
 
-      // ─── /deepdive ───
-      if (trimmed === '/deepdive') {
-        await enterDeepDive(config, conversationId, rl);
-        prompt();
-        return;
-      }
+      if (trimmed === '/deepdive') { await enterDeepDive(config, conversationId, rl); prompt(); return; }
 
-      // ─── SEND MESSAGE ───
       const response = await sendMessage(trimmed, config, conversationId, localContext, personalized, mode, history);
-
-      if (response) {
-        history.push({ role: 'user', content: trimmed });
-        history.push({ role: 'assistant', content: response });
-      }
-
+      if (response) { history.push({ role: 'user', content: trimmed }); history.push({ role: 'assistant', content: response }); }
       prompt();
     });
   };

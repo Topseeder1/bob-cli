@@ -16,7 +16,9 @@ import { registerForkCommand } from '../src/commands/fork.js';
 import { registerDeepDiveCommand } from '../src/commands/deepdive.js';
 import { registerAnalyseCommand } from '../src/commands/analyse.js';
 import { registerAutonomyCommand } from '../src/commands/autonomy.js';
-
+import { registerServeCommand } from '../src/commands/serve.js';
+import { registerRemoteCommand } from '../src/commands/remote.js';
+import { registerProfileCommand } from '../src/commands/profile.js';
 
 
 const program = new Command();
@@ -24,7 +26,7 @@ const program = new Command();
 program
   .name('bob')
   .description('Bob\'s CLI — AI coding assistant and Forge orchestrator')
-  .version('0.1.0');
+  .version('0.1.3');
 
 // ═══════════════════════════════════════════
 // WHOAMI
@@ -68,6 +70,9 @@ registerForkCommand(program);
 registerDeepDiveCommand(program);
 registerAnalyseCommand(program);
 registerAutonomyCommand(program);
+registerServeCommand(program);
+registerRemoteCommand(program);
+registerProfileCommand(program);
 
 
 
