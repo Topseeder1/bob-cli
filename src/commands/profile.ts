@@ -3,6 +3,9 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { getConfig } from '../core/config-store.js';
 import { callLocalModel, LocalChatMessage } from '../ai/providers/local.js';
+import { isAuthenticated } from '../core/api-client.js';
+import { runCloudProfiler, ProfileScope } from '../core/cloud-profiler.js';
+import { renderProfileDashboard } from '../ui/profile-dashboard.js';
 import {
   saveDailyProfile,
   saveWeeklyProfile,
@@ -33,15 +36,41 @@ export function registerProfileCommand(program: Command): void {
     .option('--today', 'Generate today\'s profile from today\'s conversations')
     .option('--week', 'Synthesize the last 7 daily profiles into a weekly profile')
     .option('--month', 'Synthesize all dailies + weeklies into a monthly profile')
-    .action(async (options: { today?: boolean; week?: boolean; month?: boolean }) => {
+    .option('--cloud', 'Run cloud-powered profiling (Power tier only)')
+    .option('--cloud-weekly', 'Run cloud weekly synthesis (Power tier only)')
+    .option('--cloud-monthly', 'Run cloud monthly synthesis (Power tier only)')
+    .option('--view', 'View your DNA dashboard')
+    .action(async (options: { today?: boolean; week?: boolean; month?: boolean; cloud?: boolean; cloudWeekly?: boolean; cloudMonthly?: boolean; view?: boolean }) => {
       const config = getConfig();
 
+      // ─── Cloud profiling paths ───
+      if (options.cloud) {
+        await handleCloudProfile('daily');
+        return;
+      }
+      if (options.cloudWeekly) {
+        await handleCloudProfile('weekly');
+        return;
+      }
+      if (options.cloudMonthly) {
+        await handleCloudProfile('monthly');
+        return;
+      }
+
+      // ─── Dashboard view ───
+      if (options.view) {
+        await renderProfileDashboard();
+        return;
+      }
+
+      // ─── Local profiling paths ───
       if (config.provider !== 'local' || !config.localEndpoint) {
-        console.log('');
-        console.log(RED('  ❌ Profile generation requires a local model.'));
-        console.log(GRAY('  Run `bob config set provider local`'));
-        console.log(GRAY('  Run `bob config set localEndpoint http://127.0.0.1:11434/api/chat`'));
-        console.log('');
+        // No local model — show dashboard if authenticated, otherwise show help
+        if (isAuthenticated()) {
+          await renderProfileDashboard();
+        } else {
+          showLocalHelp();
+        }
         return;
       }
 
@@ -52,13 +81,72 @@ export function registerProfileCommand(program: Command): void {
       } else if (options.month) {
         await generateMonthlyProfile(config);
       } else {
-        showCurrentProfile();
+        // Default: show dashboard if authenticated, otherwise local DNA
+        if (isAuthenticated()) {
+          await renderProfileDashboard();
+        } else {
+          showCurrentProfile();
+        }
       }
     });
 }
 
 // ═══════════════════════════════════════════════════════════
-// SHOW CURRENT PROFILE
+// CLOUD PROFILE HANDLER
+// ═══════════════════════════════════════════════════════════
+
+async function handleCloudProfile(scope: ProfileScope): Promise<void> {
+  if (!isAuthenticated()) {
+    console.log('');
+    console.log(RED('  ❌ Cloud profiling requires authentication.'));
+    console.log(GRAY('  Run `bob login` to authenticate.'));
+    console.log('');
+    return;
+  }
+
+  console.log('');
+  console.log(AMBER(`  🧬 Running cloud ${scope} profiling (Power tier)...`));
+  console.log('');
+
+  try {
+    await runCloudProfiler({
+      scope,
+      onProgress: (msg) => console.log(msg),
+    });
+  } catch (error: any) {
+    console.log('');
+    if (error.message.includes('Power tier')) {
+      console.log(RED('  ❌ Cloud profiling requires Power tier.'));
+      console.log(GRAY('  Upgrade at: app.bobsworkshop.com/upgrade'));
+    } else {
+      console.log(RED(`  ❌ ${error.message}`));
+    }
+    console.log('');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// LOCAL HELP (no local model, not authenticated)
+// ═══════════════════════════════════════════════════════════
+
+function showLocalHelp(): void {
+  console.log('');
+  console.log(RED('  ❌ No profile source available.'));
+  console.log('');
+  console.log(GRAY('  For local profiling:'));
+  console.log(GRAY('    bob config set provider local'));
+  console.log(GRAY('    bob config set localEndpoint http://127.0.0.1:11434/api/chat'));
+  console.log('');
+  console.log(GRAY('  For cloud profiling (Power tier):'));
+  console.log(GRAY('    bob login'));
+  console.log(GRAY('    bob profile --cloud          — Daily cloud profile'));
+  console.log(GRAY('    bob profile --cloud-weekly   — Weekly synthesis'));
+  console.log(GRAY('    bob profile --cloud-monthly  — Monthly DNA'));
+  console.log('');
+}
+
+// ═══════════════════════════════════════════════════════════
+// SHOW CURRENT PROFILE (Local DNA — fallback)
 // ═══════════════════════════════════════════════════════════
 
 function showCurrentProfile(): void {
@@ -89,18 +177,21 @@ function showCurrentProfile(): void {
   console.log(BORDER('  ╚══════════════════════════════════════════════════════════╝'));
   console.log('');
   console.log(GRAY('  Commands:'));
-  console.log(GRAY('    bob profile --today    — Generate today\'s profile'));
-  console.log(GRAY('    bob profile --week     — Weekly synthesis'));
-  console.log(GRAY('    bob profile --month    — Monthly synthesis'));
+  console.log(GRAY('    bob profile --today          — Local daily profile'));
+  console.log(GRAY('    bob profile --week           — Local weekly synthesis'));
+  console.log(GRAY('    bob profile --month          — Local monthly synthesis'));
+  console.log(GRAY('    bob profile --cloud          — Cloud daily (Power tier)'));
+  console.log(GRAY('    bob profile --cloud-weekly   — Cloud weekly (Power tier)'));
+  console.log(GRAY('    bob profile --cloud-monthly  — Cloud monthly (Power tier)'));
   console.log('');
 }
 
 // ═══════════════════════════════════════════════════════════
-// DAILY PROFILE
+// DAILY PROFILE (LOCAL)
 // ═══════════════════════════════════════════════════════════
 
 async function generateDailyProfile(config: any): Promise<void> {
-  const messages = getTodayMessages();
+  const messages = await getTodayMessages();
 
   if (messages.length === 0) {
     console.log('');
@@ -209,7 +300,6 @@ IMPORTANT: Only include assessments you have EVIDENCE for. Use exact quotes from
 
     saveDailyProfile(profile);
 
-    // Display
     console.log('');
     console.log(BORDER('  ╔══════════════════════════════════════════════════════════╗'));
     console.log(BORDER('  ║') + AMBER(`  🧬 Daily Profile — ${today}`));
@@ -240,7 +330,7 @@ IMPORTANT: Only include assessments you have EVIDENCE for. Use exact quotes from
 }
 
 // ═══════════════════════════════════════════════════════════
-// WEEKLY PROFILE
+// WEEKLY PROFILE (LOCAL)
 // ═══════════════════════════════════════════════════════════
 
 async function generateWeeklyProfile(config: any): Promise<void> {
@@ -278,7 +368,7 @@ ${JSON.stringify(dailySummaries, null, 2)}
 Respond with ONLY a valid JSON object:
 
 {
-  "trajectory": "One sentence describing the overall direction of change this week (e.g., 'Moved from uncertainty to decisive action')",
+  "trajectory": "One sentence describing the overall direction of change this week",
   "energyPattern": "When their energy peaked and dropped across the week",
   "moodShift": "How their emotional state changed from the start to end of the week, with quotes as evidence",
   "focusEvolution": "How their focus/goals shifted day by day",
@@ -350,7 +440,7 @@ Use REAL quotes from the daily profiles as evidence. Show how the person CHANGED
 }
 
 // ═══════════════════════════════════════════════════════════
-// MONTHLY PROFILE
+// MONTHLY PROFILE (LOCAL)
 // ═══════════════════════════════════════════════════════════
 
 async function generateMonthlyProfile(config: any): Promise<void> {
@@ -396,17 +486,17 @@ ${JSON.stringify(dailyHighlights, null, 2)}
 Respond with ONLY a valid JSON object:
 
 {
-  "overallTrajectory": "2-3 sentences describing the overall arc of this month — who they were at the start vs who they are now",
+  "overallTrajectory": "2-3 sentences describing the overall arc of this month",
   "weeklyProgression": ["Week 1: description", "Week 2: description", "Week 3: description", "Week 4: description"],
   "personalitySnapshot": {
-    "archetype": "A name for their personality type (e.g., 'The Determined Builder', 'The Chaotic Creative', 'The Methodical Scientist')",
+    "archetype": "A name for their personality type",
     "communicationStyle": "How they typically communicate — with evidence",
-    "workRhythm": "Their natural work pattern — sprints vs steady, morning vs night, etc",
-    "emotionalPattern": "Their emotional cycle — what triggers highs/lows, how they recover",
-    "decisionMaking": "How they make decisions — fast/slow, independent/collaborative, risk attitude",
-    "growth": "How they grew this month — what changed in their approach, confidence, or capability"
+    "workRhythm": "Their natural work pattern",
+    "emotionalPattern": "Their emotional cycle",
+    "decisionMaking": "How they make decisions",
+    "growth": "How they grew this month"
   },
-  "keyQuotes": ["4-6 most revealing user quotes from across the entire month that capture who this person is"],
+  "keyQuotes": ["4-6 most revealing user quotes from across the entire month"],
   "confidence": 0-100
 }
 

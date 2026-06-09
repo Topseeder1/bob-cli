@@ -1,6 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
+import { getConfig } from './config-store';
+import { callCloudFunction, isAuthenticated } from './api-client';
 
 const BOB_DIR = path.join(os.homedir(), '.bob');
 
@@ -219,14 +222,17 @@ function inferArchetype(profile: DailyProfile): string {
   return 'The Adaptive Engineer';
 }
 
-export function getConversationMessages(projectName?: string): { role: string; content: string; timestamp: string }[] {
+// ═══════════════════════════════════════════════════════════════════
+// LOCAL MESSAGE RETRIEVAL (Tier 1 — unchanged logic)
+// ═══════════════════════════════════════════════════════════════════
+
+function getLocalConversationMessages(projectName?: string): { role: string; content: string; timestamp: string }[] {
   const name = projectName || path.basename(process.cwd());
   const convosDir = path.join(BOB_DIR, 'projects', name, 'conversations');
 
   if (!fs.existsSync(convosDir)) return [];
 
   const allMessages: { role: string; content: string; timestamp: string }[] = [];
-  const today = new Date().toISOString().split('T')[0];
 
   const conversationDirs = fs.readdirSync(convosDir, { withFileTypes: true })
     .filter(d => d.isDirectory());
@@ -254,12 +260,95 @@ export function getConversationMessages(projectName?: string): { role: string; c
   return allMessages;
 }
 
-export function getTodayMessages(projectName?: string): { role: string; content: string; timestamp: string }[] {
-  const all = getConversationMessages(projectName);
-  const today = new Date().toISOString().split('T')[0];
+// ═══════════════════════════════════════════════════════════════════
+// FIRESTORE MESSAGE RETRIEVAL (Tier 3 — platform conversations)
+// ═══════════════════════════════════════════════════════════════════
+
+async function getFirestoreTodayMessages(): Promise<{ role: string; content: string; timestamp: string }[]> {
+  try {
+    // Only attempt if user is authenticated
+    if (!isAuthenticated()) return [];
+
+    const response = await callCloudFunction('getCLITodayMessages', {});
+
+    if (!response || !response.success || !Array.isArray(response.messages)) {
+      return [];
+    }
+
+    // Transform Firestore messages to match local format
+    return response.messages.map((msg: any) => ({
+      role: msg.sender || 'unknown',
+      content: msg.message || '',
+      timestamp: msg.timestamp ? new Date(msg.timestamp).toISOString() : '',
+    }));
+
+  } catch (error) {
+    // Fail silently — Firestore unavailability should never block local profiling
+    console.error('[PROFILE_STORE] Firestore message fetch failed (non-fatal):', (error as Error).message);
+    return [];
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// DEDUPLICATION LOGIC
+// ═══════════════════════════════════════════════════════════════════
+
+function generateMessageKey(msg: { role: string; content: string; timestamp: string }): string {
+  const normalizedContent = (msg.content || '').trim().substring(0, 100);
+  const raw = `${msg.timestamp}|${normalizedContent}`;
+  return crypto.createHash('md5').update(raw).digest('hex');
+}
+
+function deduplicateMessages(
+  localMessages: { role: string; content: string; timestamp: string }[],
+  firestoreMessages: { role: string; content: string; timestamp: string }[]
+): { role: string; content: string; timestamp: string }[] {
+  const seen = new Map<string, { role: string; content: string; timestamp: string }>();
+
+  // Local messages take priority
+  for (const msg of localMessages) {
+    const key = generateMessageKey(msg);
+    seen.set(key, msg);
+  }
+
+  // Add Firestore messages only if not already present
+  for (const msg of firestoreMessages) {
+    const key = generateMessageKey(msg);
+    if (!seen.has(key)) {
+      seen.set(key, msg);
+    }
+  }
+
+  // Sort by timestamp ascending
+  return Array.from(seen.values()).sort((a, b) => {
+    if (!a.timestamp || !b.timestamp) return 0;
+    return a.timestamp.localeCompare(b.timestamp);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PUBLIC API (Updated — now async, 24-hour rolling window)
+// ═══════════════════════════════════════════════════════════════════
+
+export async function getConversationMessages(projectName?: string): Promise<{ role: string; content: string; timestamp: string }[]> {
+  const localMessages = getLocalConversationMessages(projectName);
+
+  // If not authenticated, return local only
+  if (!isAuthenticated()) return localMessages;
+
+  // Fetch Firestore messages and merge
+  const firestoreMessages = await getFirestoreTodayMessages();
+  return deduplicateMessages(localMessages, firestoreMessages);
+}
+
+export async function getTodayMessages(projectName?: string): Promise<{ role: string; content: string; timestamp: string }[]> {
+  const all = await getConversationMessages(projectName);
+
+  // 24-hour rolling window instead of calendar day
+  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
   return all.filter(msg => {
     if (!msg.timestamp) return false;
-    return msg.timestamp.startsWith(today);
+    return msg.timestamp >= twentyFourHoursAgo;
   });
 }

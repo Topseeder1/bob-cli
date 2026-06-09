@@ -13,7 +13,7 @@ import { renderMarkdown } from '../ui/renderer.js';
 import { saveMessage } from '../core/conversation-store.js';
 import { loadSummaries } from '../core/project-map.js';
 import { getRelevantFileContents } from '../core/file-retrieval.js';
-import { extractProposedFile, proposeAndWriteFile, stripCodeBlockFromResponse } from '../core/file-writer.js';
+import { stripCodeBlockFromResponse, processAllProposedFiles } from '../core/file-writer.js';
 import { enterDeepDive } from './deepdive.js';
 import { renderSessionHeader } from '../ui/session-header.js';
 import { showWelcomeIfFirstRun } from '../ui/welcome.js';
@@ -37,20 +37,20 @@ export function registerChatCommand(program: Command): void {
       }
 
       let localContext = '';
-      if (options.context !== false) {
-        localContext = buildLocalContext(process.cwd());
-      }
+      if (options.context !== false) { localContext = buildLocalContext(process.cwd()); }
       if (options.file) {
         const fileContent = readFileContent(options.file);
-        if (fileContent) {
-          localContext += `\n\n--- INCLUDED FILE: ${options.file} ---\n${fileContent}\n--- END FILE ---`;
-        } else {
-          console.log(chalk.yellow(`  ⚠️  Could not read file: ${options.file}`));
-        }
+        if (fileContent) { localContext += `\n\n--- INCLUDED FILE: ${options.file} ---\n${fileContent}\n--- END FILE ---`; }
+        else { console.log(chalk.yellow(`  ⚠️  Could not read file: ${options.file}`)); }
       }
 
-      if (options.interactive || !message) {
-        await runInteractiveSession(config, conversationId, localContext, options.personalized || false, 'standard');
+      if (options.interactive || !message || options.personalized) {
+        // If personalized with a message, send it first then go interactive
+        if (options.personalized && message) {
+          await runInteractiveSession(config, conversationId, localContext, true, 'personalized', message);
+        } else {
+          await runInteractiveSession(config, conversationId, localContext, options.personalized || false, 'standard');
+        }
         return;
       }
 
@@ -58,15 +58,7 @@ export function registerChatCommand(program: Command): void {
     });
 }
 
-async function sendMessage(
-  message: string,
-  config: any,
-  conversationId: string,
-  localContext: string,
-  personalized: boolean,
-  mode: 'standard' | 'consultant' | 'personalized',
-  history: LocalChatMessage[],
-): Promise<string> {
+async function sendMessage(message: string, config: any, conversationId: string, localContext: string, personalized: boolean, mode: 'standard' | 'consultant' | 'personalized', history: LocalChatMessage[]): Promise<string> {
   const spinner = ora({ text: chalk.cyan('  Bob is thinking...'), spinner: 'dots' }).start();
 
   let selectedFiles: string[] = [];
@@ -78,7 +70,12 @@ async function sendMessage(
     let relevantFiles = '';
     if (config.localEndpoint) {
       spinner.text = chalk.cyan('  Bob is finding relevant files...');
-      const retrieval = await getRelevantFileContents(message, config.localEndpoint);
+      // Use last assistant message for context when current message is short/vague
+      const lastAssistantMsg = history.length > 0 ? history[history.length - 1]?.content?.slice(0, 500) || '' : '';
+      const retrievalQuery = lastAssistantMsg
+        ? `Previous context: ${lastAssistantMsg}\n\nCurrent request: ${message}`
+        : message;
+      const retrieval = await getRelevantFileContents(retrievalQuery, config.localEndpoint);
       relevantFiles = retrieval.fileContents;
       selectedFiles = retrieval.selectedFiles;
     }
@@ -86,17 +83,10 @@ async function sendMessage(
     spinner.text = chalk.cyan('  Bob is thinking...');
 
     let fullContext = localContext;
-    if (relevantFiles) {
-      fullContext += `\n\n${relevantFiles}`;
-    }
+    if (relevantFiles) { fullContext += `\n\n${relevantFiles}`; }
 
     if (config.provider === 'local') {
-      if (!config.localEndpoint) {
-        spinner.stop();
-        console.log(chalk.red('  ❌ No local endpoint configured.'));
-        console.log(chalk.gray('  Run `bob config set localEndpoint http://127.0.0.1:11434/api/chat`'));
-        return '';
-      }
+      if (!config.localEndpoint) { spinner.stop(); console.log(chalk.red('  ❌ No local endpoint configured.')); return ''; }
 
       const systemPrompt = buildPersonalizedPrompt('standard');
       const messages: LocalChatMessage[] = [
@@ -106,29 +96,26 @@ async function sendMessage(
       ];
 
       response = await callLocalModel(config.localEndpoint, messages);
-
-      saveMessage(conversationId, { sender: 'user', message: message, timestamp: new Date().toISOString(), type: 'text' }, { tier: 'local', provider: config.provider, mode });
+      saveMessage(conversationId, { sender: 'user', message, timestamp: new Date().toISOString(), type: 'text' }, { tier: 'local', provider: config.provider, mode });
       saveMessage(conversationId, { sender: 'bob', message: response, timestamp: new Date().toISOString(), type: 'text' }, { tier: 'local', provider: config.provider, mode });
 
     } else if (personalized || config.personalizationMode) {
-      if (!config.loggedIn || !config.authToken) {
-        spinner.stop();
-        console.log(chalk.red('  ❌ Personalization mode requires Tier 3 (platform login).'));
-        return '';
-      }
-
-      const result = await callCloudFunction('getPersonalizedResponse', { userEmail: config.email, userId: config.uid, conversationId, userMessage: message, useContext: true, localContext: fullContext || null });
-      response = result?.text || result?.response || result?.message || 'No response received.';
+      if (!config.loggedIn || !config.authToken) { spinner.stop(); console.log(chalk.red('  ❌ Personalization mode requires Tier 3.')); return ''; }
+      await callCloudFunction('saveCLIConversationMessage', { conversationId, message, sender: 'user' });
+      const result = await callCloudFunction('getPersonalizedResponse', {
+        email: config.email,
+        uid: config.uid,
+        conversationId,
+        userMessage: message,
+        additionalContext: { localContext: fullContext || null },
+        isLocalModel: false,
+        activePersonaId: null,
+      });
+      response = result?.response || result?.data?.response || result?.text || result?.message || 'No response received.';
       hasProjectContext = result?.hasProjectContext ?? null;
 
     } else {
-      if (!config.loggedIn || !config.authToken) {
-        spinner.stop();
-        console.log(chalk.red('  ❌ Not logged in.'));
-        console.log(chalk.gray('  Run `bob login` to authenticate, or set provider to local.'));
-        return '';
-      }
-
+      if (!config.loggedIn || !config.authToken) { spinner.stop(); console.log(chalk.red('  ❌ Not logged in.')); console.log(chalk.gray('  Run `bob login` to authenticate, or set provider to local.')); return ''; }
       const result = await callCloudFunction('chatWithBobStream', { userEmail: config.email, userId: config.uid, conversationId, userMessage: message, useContext: true, consultantModelId: 'gemini-2.5-flash', useOrgContext: false, isPassalongActive: false, linkedConvoId: null, localContext: fullContext || null });
       response = result?.text || result?.response || result?.message || 'No response received.';
       hasProjectContext = result?.hasProjectContext ?? null;
@@ -136,11 +123,9 @@ async function sendMessage(
 
     spinner.stop();
 
-    const proposed = extractProposedFile(response);
-    let displayResponse = response;
-    if (proposed) { displayResponse = stripCodeBlockFromResponse(response); }
-
+    const displayResponse = stripCodeBlockFromResponse(response);
     const rendered = renderMarkdown(displayResponse);
+
     console.log('');
     console.log(chalk.gray('  ─────────────────────────────────────'));
     console.log(chalk.bold.cyan('  🤖 Bob:'));
@@ -160,24 +145,27 @@ async function sendMessage(
     console.log(chalk.gray('  ─────────────────────────────────────'));
     console.log('');
 
-    if (proposed) { await proposeAndWriteFile(proposed); }
+    await processAllProposedFiles(response);
 
     return response;
 
-  } catch (error: any) {
-    spinner.stop();
-    console.log(chalk.red(`  ❌ ${error.message || 'Unknown error'}`));
-    return '';
-  }
+  } catch (error: any) { spinner.stop(); console.log(chalk.red(`  ❌ ${error.message || 'Unknown error'}`)); return ''; }
 }
 
-async function runInteractiveSession(config: any, conversationId: string, localContext: string, personalized: boolean, mode: 'standard' | 'consultant' | 'personalized'): Promise<void> {
+async function runInteractiveSession(config: any, conversationId: string, localContext: string, personalized: boolean, mode: 'standard' | 'consultant' | 'personalized', initialMessage?: string): Promise<void> {
+
   if (!config.hasSeenWelcome) { await showWelcomeIfFirstRun(); setConfigValue('hasSeenWelcome', true); }
   renderSessionHeader('chat');
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const history: LocalChatMessage[] = [];
-
+  if (initialMessage) {
+    const response = await sendMessage(initialMessage, config, conversationId, localContext, personalized, mode, history);
+    if (response) {
+      history.push({ role: 'user', content: initialMessage });
+      history.push({ role: 'assistant', content: response });
+    }
+  }
   const prompt = (): void => {
     rl.question(chalk.green('  You: '), async (input) => {
       const trimmed = input.trim();
@@ -189,8 +177,7 @@ async function runInteractiveSession(config: any, conversationId: string, localC
         if (config.tier === 'platform' && config.provider !== 'local') { console.log(chalk.gray(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`)); }
         console.log(chalk.gray('  👋 See you next time.'));
         console.log('');
-        rl.close();
-        return;
+        rl.close(); return;
       }
 
       if (trimmed === '/new') { history.length = 0; conversationId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; setConfigValue('conversationId', conversationId); console.log(chalk.cyan('  🔄 New session started.')); console.log(''); prompt(); return; }

@@ -33,8 +33,9 @@ export async function getRelevantFileContents(
   if (dependencies && Object.keys(dependencies).length > 0) {
     mapContext += '\nDEPENDENCIES:\n';
     for (const [filePath, deps] of Object.entries(dependencies)) {
-      if (deps.length > 0) {
-        mapContext += `- ${filePath} depends on: [${deps.join(', ')}]\n`;
+      const depArray = Array.isArray(deps) ? deps : (typeof deps === 'object' && deps !== null ? Object.keys(deps) : []);
+      if (depArray.length > 0) {
+        mapContext += `- ${filePath} depends on: [${depArray.join(', ')}]\n`;
       }
     }
   }
@@ -66,7 +67,7 @@ export async function getRelevantFileContents(
     let fileContents = '## RELEVANT FILES (selected by Bob from project index) ##\n\n';
     const validFiles: string[] = [];
 
-    for (const filePath of selectedFiles.slice(0, 5)) {
+    for (const filePath of selectedFiles.slice(0, 10)) {
       const absolutePath = path.join(cwd, filePath);
       try {
         if (fs.existsSync(absolutePath)) {

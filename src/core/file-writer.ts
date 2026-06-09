@@ -7,68 +7,109 @@ export interface ProposedFile {
   filePath: string;
   content: string;
   isNew: boolean;
+  isLocal: boolean;
 }
 
-/**
- * Extracts a proposed file from Bob's response.
- */
+export function extractAllProposedFiles(response: string): ProposedFile[] {
+  const proposals: ProposedFile[] = [];
+  const codeBlockRegex = /```[\w]*\n([\s\S]*?)```/g;
+  let match;
+
+  while ((match = codeBlockRegex.exec(response)) !== null) {
+    const codeContent = match[1].trim();
+    const lines = codeContent.split('\n');
+    if (lines.length === 0) continue;
+
+    const firstLine = lines[0].trim();
+    let filePathMatch = firstLine.match(/^\/\/\s*File:\s*(.+)$/);
+    if (!filePathMatch) filePathMatch = firstLine.match(/^\/\/\s*([\w\-\.\/\\]+\.\w+)\s*$/);
+    if (!filePathMatch) filePathMatch = firstLine.match(/^#\s*File:\s*(.+)$/);
+    if (!filePathMatch) filePathMatch = firstLine.match(/^#\s*([\w\-\.\/\\]+\.\w+)\s*$/);
+    if (!filePathMatch) filePathMatch = firstLine.match(/^\*\s*\[FILE:\s*(.+?)\]/);
+    if (!filePathMatch) continue;
+
+    const filePath = filePathMatch[1].trim();
+    if (!filePath.includes('/') && !filePath.includes('\\')) continue;
+    if (!filePath.includes('.')) continue;
+
+    const fileContent = lines.slice(1).join('\n').trim();
+    const isLocal = isLocalProjectFile(filePath);
+    const absolutePath = path.join(process.cwd(), filePath);
+    const isNew = !fs.existsSync(absolutePath);
+
+    proposals.push({ filePath, content: fileContent, isNew, isLocal });
+  }
+
+  return proposals;
+}
+
 export function extractProposedFile(response: string): ProposedFile | null {
-  const codeBlockRegex = /```[\w]*\n([\s\S]*?)```/;
-  const match = response.match(codeBlockRegex);
-
-  if (!match) return null;
-
-  const codeContent = match[1].trim();
-  const lines = codeContent.split('\n');
-
-  if (lines.length === 0) return null;
-
-  const firstLine = lines[0].trim();
-
-  let filePathMatch = firstLine.match(/^\/\/\s*File:\s*(.+)$/);
-
-  if (!filePathMatch) {
-    filePathMatch = firstLine.match(/^\/\/\s*([\w\-\.\/\\]+\.\w+)\s*$/);
-  }
-
-  if (!filePathMatch) {
-    filePathMatch = firstLine.match(/^#\s*File:\s*(.+)$/);
-  }
-
-  if (!filePathMatch) {
-    filePathMatch = firstLine.match(/^#\s*([\w\-\.\/\\]+\.\w+)\s*$/);
-  }
-
-  if (!filePathMatch) return null;
-
-  const filePath = filePathMatch[1].trim();
-
-  if (!filePath.includes('/') && !filePath.includes('\\')) return null;
-  if (!filePath.includes('.')) return null;
-
-  const fileContent = lines.slice(1).join('\n').trim();
-  const absolutePath = path.join(process.cwd(), filePath);
-  const isNew = !fs.existsSync(absolutePath);
-
-  return {
-    filePath,
-    content: fileContent,
-    isNew,
-  };
+  const all = extractAllProposedFiles(response);
+  return all.length > 0 ? all[0] : null;
 }
 
-/**
- * Strips the code block from Bob's response for cleaner display.
- */
 export function stripCodeBlockFromResponse(response: string): string {
-  return response.replace(/```[\w]*\n[\s\S]*?```/g, '').trim();
+  return response.replace(/```[\w]*\n\s*(?:\/\/\s*(?:File:)?\s*[\w\-\.\/\\]+\.\w+|#\s*(?:File:)?\s*[\w\-\.\/\\]+\.\w+|\*\s*\[FILE:)[^\n]*\n[\s\S]*?```/g, '').trim();
 }
 
-/**
- * Prompts the user for approval and writes the file to disk.
- * If autoApprove is true, skips the prompt and writes directly (used by daemon/remote mode).
- */
-export async function proposeAndWriteFile(proposed: ProposedFile, autoApprove: boolean = false): Promise<boolean> {
+function isLocalProjectFile(filePath: string): boolean {
+  const cwd = process.cwd();
+  const externalPatterns = ['functions/', 'lib/', 'android/', 'ios/', 'macos/', 'windows/', 'web/'];
+
+  for (const pattern of externalPatterns) {
+    if (filePath.startsWith(pattern)) {
+      const localPath = path.join(cwd, pattern.replace('/', ''));
+      if (!fs.existsSync(localPath)) return false;
+    }
+  }
+
+  const resolved = path.resolve(cwd, filePath);
+  if (!resolved.startsWith(cwd)) return false;
+
+  return true;
+}
+
+export async function processAllProposedFiles(response: string, autoApprove: boolean = false, existingRl?: readline.Interface): Promise<void> {
+  const proposals = extractAllProposedFiles(response);
+  if (proposals.length === 0) return;
+
+  for (const proposed of proposals) {
+    if (proposed.isLocal) {
+      await proposeAndWriteFile(proposed, autoApprove, existingRl);
+    } else {
+      displayExternalFile(proposed);
+    }
+  }
+}
+
+function displayExternalFile(proposed: ProposedFile): void {
+  const totalLines = proposed.content.split('\n').length;
+
+  console.log('');
+  console.log(chalk.yellow(`  ┌─────────────────────────────────────────┐`));
+  console.log(chalk.yellow(`  │ 📋  EXTERNAL: ${proposed.filePath}`));
+  console.log(chalk.yellow(`  │     This file belongs to another project.`));
+  console.log(chalk.yellow(`  ├─────────────────────────────────────────┤`));
+
+  const previewLines = proposed.content.split('\n').slice(0, 6);
+  for (const line of previewLines) {
+    console.log(chalk.gray(`  │ ${line}`));
+  }
+  if (totalLines > 6) {
+    console.log(chalk.gray(`  │ ... (${totalLines - 6} more lines)`));
+  }
+
+  console.log(chalk.yellow(`  └─────────────────────────────────────────┘`));
+  console.log(chalk.gray(`  Copy this file manually to your project at: ${proposed.filePath}`));
+  console.log('');
+}
+
+export async function proposeAndWriteFile(proposed: ProposedFile, autoApprove: boolean = false, existingRl?: readline.Interface): Promise<boolean> {
+  if (!proposed.isLocal) {
+    displayExternalFile(proposed);
+    return false;
+  }
+
   const absolutePath = path.join(process.cwd(), proposed.filePath);
   const action = proposed.isNew ? 'CREATE' : 'UPDATE';
   const icon = proposed.isNew ? '📄' : '✏️';
@@ -92,11 +133,18 @@ export async function proposeAndWriteFile(proposed: ProposedFile, autoApprove: b
     console.log(color(`  └─────────────────────────────────────────┘`));
     console.log('');
 
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const answer = await new Promise<string>(resolve => {
-      rl.question(chalk.cyan(`  💾 ${action === 'CREATE' ? 'Write this file' : 'Apply changes'}? (y/n/path): `), resolve);
-    });
-    rl.close();
+    let answer: string;
+    if (existingRl) {
+      answer = await new Promise<string>(resolve => {
+        existingRl.question(chalk.cyan(`  💾 ${action === 'CREATE' ? 'Write this file' : 'Apply changes'}? (y/n/path): `), resolve);
+      });
+    } else {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      answer = await new Promise<string>(resolve => {
+        rl.question(chalk.cyan(`  💾 ${action === 'CREATE' ? 'Write this file' : 'Apply changes'}? (y/n/path): `), resolve);
+      });
+      rl.close();
+    }
 
     const trimmed = answer.trim().toLowerCase();
 
@@ -105,7 +153,6 @@ export async function proposeAndWriteFile(proposed: ProposedFile, autoApprove: b
       return false;
     }
 
-    // Allow custom path override
     if (trimmed !== 'y' && trimmed !== 'yes' && trimmed.length > 0) {
       const customPath = path.join(process.cwd(), trimmed);
       return writeFile(customPath, proposed.content, proposed.filePath, proposed.isNew);
@@ -115,17 +162,11 @@ export async function proposeAndWriteFile(proposed: ProposedFile, autoApprove: b
   return writeFile(absolutePath, proposed.content, proposed.filePath, proposed.isNew);
 }
 
-/**
- * Actually writes the file to disk with backup.
- */
 function writeFile(targetPath: string, content: string, originalFilePath: string, isNew: boolean): boolean {
   try {
     const dir = path.dirname(targetPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-    // Backup original if updating
     if (!isNew && fs.existsSync(targetPath)) {
       const backupDir = path.join(process.cwd(), '.bob-backups');
       if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
