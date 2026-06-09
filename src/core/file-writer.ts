@@ -49,7 +49,10 @@ export function extractProposedFile(response: string): ProposedFile | null {
 }
 
 export function stripCodeBlockFromResponse(response: string): string {
-  return response.replace(/```[\w]*\n\s*(?:\/\/\s*(?:File:)?\s*[\w\-\.\/\\]+\.\w+|#\s*(?:File:)?\s*[\w\-\.\/\\]+\.\w+|\*\s*\[FILE:)[^\n]*\n[\s\S]*?```/g, '').trim();
+  let stripped = response.replace(/```[\w]*\n\s*(?:\/\/\s*(?:File:)?\s*[\w\-\.\/\\]+\.\w+|#\s*(?:File:)?\s*[\w\-\.\/\\]+\.\w+|\*\s*\[FILE:)[^\n]*\n[\s\S]*?```/g, '').trim();
+  // Also strip capability_invocation blocks
+  stripped = stripped.replace(/```capability_invocation\s*[\s\S]*?```/g, '').trim();
+  return stripped;
 }
 
 function isLocalProjectFile(filePath: string): boolean {
@@ -70,10 +73,16 @@ function isLocalProjectFile(filePath: string): boolean {
 }
 
 export async function processAllProposedFiles(response: string, autoApprove: boolean = false, existingRl?: readline.Interface): Promise<void> {
+  // Standard file proposals (// File: pattern)
   const proposals = extractAllProposedFiles(response);
-  if (proposals.length === 0) return;
 
-  for (const proposed of proposals) {
+  // IDRP capability invocation proposals
+  const idrpProposals = extractIDRPFileProposals(response);
+
+  const allProposals = [...proposals, ...idrpProposals];
+  if (allProposals.length === 0) return;
+
+  for (const proposed of allProposals) {
     if (proposed.isLocal) {
       await proposeAndWriteFile(proposed, autoApprove, existingRl);
     } else {
@@ -189,4 +198,38 @@ function writeFile(targetPath: string, content: string, originalFilePath: string
     console.log(chalk.red(`  ❌ Write failed: ${error.message}`));
     return false;
   }
+}
+
+/**
+ * Extracts file proposals from IDRP capability_invocation blocks.
+ * Handles workspace_create_file and workspace_update_file capabilities.
+ */
+function extractIDRPFileProposals(response: string): ProposedFile[] {
+  const proposals: ProposedFile[] = [];
+  const invocationRegex = /```capability_invocation\s*([\s\S]*?)```/g;
+  let match;
+
+  while ((match = invocationRegex.exec(response)) !== null) {
+    try {
+      const invocation = JSON.parse(match[1].trim());
+
+      if (invocation.action !== 'invoke') continue;
+      if (!['workspace_create_file', 'workspace_update_file'].includes(invocation.capabilityId)) continue;
+
+      const filePath = invocation.params?.filePath;
+      const content = invocation.params?.content || invocation.params?.newContent;
+
+      if (!filePath || !content) continue;
+
+      const absolutePath = path.join(process.cwd(), filePath);
+      const isNew = !fs.existsSync(absolutePath);
+      const isLocal = isLocalProjectFile(filePath);
+
+      proposals.push({ filePath, content, isNew, isLocal });
+    } catch {
+      // Invalid JSON in invocation block — skip
+    }
+  }
+
+  return proposals;
 }

@@ -277,13 +277,21 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
           let responseText: string;
 
           if (isLocalProvider) {
-            const handoffResult = await callCloudFunction('generateDeepDiveResponse', { conversationId, parentMessageId, userMessage: trimmed, isLocalModel: true, activePersonaId: null, localContext });
+            const handoffResult = await callCloudFunction('generateDeepDiveResponse', {
+                                    conversationId,
+                                    parentMessageId,
+                                    userMessage: trimmed,
+                                    isLocalModel: false,
+                                    activePersonaId: null,
+                                    localContext,
+                                    cliMode: true,
+                                  });
             if (!handoffResult?.isHandoff || !handoffResult?.masterPrompt) { throw new Error('Handoff failed — no master prompt returned.'); }
             const localMessages: LocalChatMessage[] = [{ role: 'user', content: handoffResult.masterPrompt }];
             responseText = await callLocalModel(config.localEndpoint!, localMessages);
             await callCloudFunction('saveCLIDeepDiveMessage', { conversationId, parentMessageId, message: responseText, sender: 'bob', origin: 'local-sovereign' });
           } else {
-            await callCloudFunction('generateDeepDiveResponse', { conversationId, parentMessageId, userMessage: trimmed, isLocalModel: false, activePersonaId: null, localContext });
+              await callCloudFunction('generateDeepDiveResponse', { conversationId, parentMessageId, userMessage: trimmed, isLocalModel: false, activePersonaId: null, localContext, cliMode: true });
             const latestResult = await callCloudFunction('listCLIDeepDives', { conversationId, action: 'getLatestSandboxMessage', parentMessageId });
             responseText = latestResult?.message || 'Deep dive response saved.';
           }
