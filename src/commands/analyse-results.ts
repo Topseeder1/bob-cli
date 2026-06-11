@@ -1,3 +1,4 @@
+// File: src/commands/analyse-results.ts
 import chalk from 'chalk';
 import inquirer from 'inquirer';
 import * as fs from 'fs';
@@ -9,13 +10,17 @@ import { readFileContent } from '../core/context-builder.js';
 import { proposeAndWriteFile } from '../core/file-writer.js';
 import { markSuggestionById } from '../core/analysis-tracker.js';
 
-const RED = chalk.hex('#EF5350');
-const PURPLE = chalk.hex('#AB47BC');
-const BLUE = chalk.hex('#42A5F5');
-const TEAL = chalk.hex('#26A69A');
-const AMBER = chalk.hex('#FFAB00');
-const GRAY = chalk.gray;
+// ─── DESIGN TOKENS ───
+const BRAND_PRIMARY = chalk.hex('#E66F24');
+const BRAND_SECONDARY = chalk.hex('#FFAB00');
+const SUCCESS = chalk.hex('#66BB6A');
+const INFO = chalk.hex('#26C6DA');
+const WARNING = chalk.hex('#FFC107');
+const ERROR = chalk.hex('#EF5350');
+const MUTED = chalk.hex('#78909C');
 const BORDER = chalk.hex('#455A64');
+
+const MODE_CONSULTANT = chalk.hex('#AB47BC');
 
 const PRIORITY_COLORS: Record<string, any> = {
   'critical': chalk.bgHex('#B71C1C').white,
@@ -25,10 +30,17 @@ const PRIORITY_COLORS: Record<string, any> = {
 };
 
 const CATEGORY_COLORS: Record<string, any> = {
-  'bugs': RED,
-  'features': PURPLE,
-  'improvements': BLUE,
-  'upgrades': TEAL,
+  'bugs': ERROR,
+  'features': MODE_CONSULTANT,
+  'improvements': INFO,
+  'upgrades': SUCCESS,
+};
+
+const CATEGORY_ICONS: Record<string, string> = {
+  'bugs': '🔴',
+  'features': '🟣',
+  'improvements': '🔵',
+  'upgrades': '🟢',
 };
 
 interface Suggestion {
@@ -61,7 +73,7 @@ export async function showInteractiveResults(
       });
       allSuggestions = result?.suggestions || [];
     } catch (error: any) {
-      console.log(chalk.red(`  ❌ ${error.message}`));
+      console.log(ERROR(`  ❌ ${error.message}`));
       return;
     }
   } else {
@@ -81,12 +93,13 @@ export async function showInteractiveResults(
 
   if (allSuggestions.length === 0) {
     console.log('');
-    console.log(chalk.green('  ✅ No items found. Clean!'));
+    console.log(SUCCESS('  ✅ No items found. Clean!'));
     console.log('');
     return;
   }
 
-  const color = CATEGORY_COLORS[category] || GRAY;
+  const color = CATEGORY_COLORS[category] || MUTED;
+  const icon = CATEGORY_ICONS[category] || '◆';
 
   let running = true;
   let displaySuggestions = [...allSuggestions];
@@ -94,26 +107,26 @@ export async function showInteractiveResults(
 
   while (running) {
     console.log('');
-    console.log(color(`  ◆ ${category.toUpperCase()} (${displaySuggestions.length} items) | Sort: ${currentSort}`));
-    console.log(GRAY('  ────────────────────────────────────────────────────────'));
+    console.log(color(`  ${icon} ${category.toUpperCase()} (${displaySuggestions.length} items) │ Sort: ${currentSort}`));
+    console.log(MUTED('  ────────────────────────────────────────────────────────'));
     console.log('');
 
     const choices: any[] = [];
 
     choices.push({
-      name: chalk.cyan('  🔀 Toggle sort'),
+      name: INFO('  🔀 Toggle sort'),
       value: '__sort__',
       short: 'Sort',
     });
-    choices.push(new inquirer.Separator(GRAY('  ──────────────────────────────────────')));
+    choices.push(new inquirer.Separator(MUTED('  ──────────────────────────────────────')));
 
     for (let idx = 0; idx < displaySuggestions.length; idx++) {
       const item = displaySuggestions[idx];
-      const pColor = PRIORITY_COLORS[item.priority?.toLowerCase()] || GRAY;
-      const priorityLabel = (item.priority || 'MEDIUM').toUpperCase().padEnd(9);
-      const filePath = (item.filePath || 'unknown').split('/').pop() || 'unknown';
-      const desc = (item.description || item.title || 'No description').slice(0, 42);
-      const displayName = `${pColor(priorityLabel)} ${chalk.cyan(filePath.padEnd(18))} ${chalk.white(desc)}`;
+      const pColor = PRIORITY_COLORS[item.priority?.toLowerCase()] || MUTED;
+      const priorityLabel = pColor((item.priority || 'MEDIUM').toUpperCase().padEnd(9));
+      const fileName = (item.filePath || 'unknown').split('/').pop() || 'unknown';
+      const title = (item.title || item.description || 'No description').slice(0, 40);
+      const displayName = `  ${priorityLabel} ${INFO(fileName.padEnd(20))} ${chalk.white(title)}`;
 
       choices.push({
         name: displayName,
@@ -123,9 +136,9 @@ export async function showInteractiveResults(
       });
     }
 
-    choices.push(new inquirer.Separator(GRAY('  ──────────────────────────────────────')));
+    choices.push(new inquirer.Separator(MUTED('  ──────────────────────────────────────')));
     choices.push({
-      name: chalk.gray('  ← Quit'),
+      name: MUTED('  ← Quit'),
       value: '__quit__',
       short: 'Quit',
     });
@@ -158,7 +171,7 @@ export async function showInteractiveResults(
     if (selected === '__sort__') {
       currentSort = currentSort === 'priority' ? 'file' : 'priority';
       sortSuggestions(displaySuggestions, currentSort);
-      console.log(chalk.cyan(`  Sort changed to: ${currentSort}`));
+      console.log(INFO(`  Sort changed to: ${currentSort}`));
       continue;
     }
 
@@ -168,7 +181,6 @@ export async function showInteractiveResults(
 
       if (action === 'implement') {
         await handleImplement(item, config, category);
-        // Remove from display after implementation
         displaySuggestions.splice(selected, 1);
         const originalIdx = allSuggestions.findIndex(s => s.id === item.id);
         if (originalIdx !== -1) allSuggestions.splice(originalIdx, 1);
@@ -182,54 +194,55 @@ export async function showInteractiveResults(
         displaySuggestions.splice(selected, 1);
         const originalIdx = allSuggestions.findIndex(s => s.id === item.id);
         if (originalIdx !== -1) allSuggestions.splice(originalIdx, 1);
-        console.log(chalk.gray('  ⏭️  Dismissed and logged.'));
+        console.log(MUTED('  ⏭️  Dismissed and logged.'));
       }
     }
   }
 }
 
 async function showExpandedView(item: Suggestion, category: string): Promise<'implement' | 'dismiss' | 'back'> {
-  const color = CATEGORY_COLORS[category] || GRAY;
-  const pColor = PRIORITY_COLORS[item.priority?.toLowerCase()] || GRAY;
+  const color = CATEGORY_COLORS[category] || MUTED;
+  const pColor = PRIORITY_COLORS[item.priority?.toLowerCase()] || MUTED;
+  const icon = CATEGORY_ICONS[category] || '◆';
 
   console.log('');
-  console.log(color('  ╔══════════════════════════════════════════════════════════╗'));
-  console.log(color('  ║ ') + pColor(`${(item.priority || 'MEDIUM').toUpperCase()} ${category.toUpperCase().slice(0, -1)}`));
-  console.log(color('  ╠══════════════════════════════════════════════════════════╣'));
-  console.log(color('  ║') + chalk.gray('  File: ') + chalk.cyan(item.filePath || 'unknown'));
-  console.log(color('  ║') + chalk.gray('  Priority: ') + pColor((item.priority || 'medium').toUpperCase()));
-  console.log(color('  ║'));
-  console.log(color('  ║') + chalk.gray('  Title:'));
-  console.log(color('  ║') + chalk.white.bold(`  ${item.title || 'No title'}`));
-  console.log(color('  ║'));
-  console.log(color('  ║') + chalk.gray('  Description:'));
+  console.log(BORDER('  ╔══════════════════════════════════════════════════════════╗'));
+  console.log(BORDER('  ║') + ` ${icon} ` + pColor(`${(item.priority || 'MEDIUM').toUpperCase()} ${category.toUpperCase().slice(0, -1)}`));
+  console.log(BORDER('  ╠══════════════════════════════════════════════════════════╣'));
+  console.log(BORDER('  ║') + MUTED('  File:     ') + INFO(item.filePath || 'unknown'));
+  console.log(BORDER('  ║') + MUTED('  Priority: ') + pColor((item.priority || 'medium').toUpperCase()));
+  console.log(BORDER('  ║'));
+  console.log(BORDER('  ║') + MUTED('  Title:'));
+  console.log(BORDER('  ║') + chalk.white.bold(`  ${item.title || 'No title'}`));
+  console.log(BORDER('  ║'));
+  console.log(BORDER('  ║') + MUTED('  Description:'));
 
   const descLines = wrapText(item.description || 'No description', 54);
   for (const line of descLines) {
-    console.log(color('  ║') + chalk.white(`  ${line}`));
+    console.log(BORDER('  ║') + chalk.white(`  ${line}`));
   }
 
   if (item.implementation) {
-    console.log(color('  ║'));
-    console.log(color('  ║') + chalk.gray('  Implementation:'));
+    console.log(BORDER('  ║'));
+    console.log(BORDER('  ║') + MUTED('  Implementation:'));
     const implLines = wrapText(item.implementation, 54);
     for (const line of implLines) {
-      console.log(color('  ║') + chalk.white(`  ${line}`));
+      console.log(BORDER('  ║') + chalk.white(`  ${line}`));
     }
   }
 
-  console.log(color('  ╚══════════════════════════════════════════════════════════╝'));
+  console.log(BORDER('  ╚══════════════════════════════════════════════════════════╝'));
   console.log('');
 
   const { action } = await inquirer.prompt([
     {
       type: 'select',
       name: 'action',
-      message: 'What do you want to do?',
+      message: BRAND_SECONDARY('What do you want to do?'),
       choices: [
-        { name: chalk.green('  🔧 Implement this fix'), value: 'implement' },
-        { name: chalk.red('  🗑️  Dismiss'), value: 'dismiss' },
-        { name: chalk.gray('  ← Back to list'), value: 'back' },
+        { name: SUCCESS('  🔧 Implement this fix'), value: 'implement' },
+        { name: ERROR('  🗑️  Dismiss'), value: 'dismiss' },
+        { name: MUTED('  ← Back to list'), value: 'back' },
       ],
     },
   ]);
@@ -239,14 +252,14 @@ async function showExpandedView(item: Suggestion, category: string): Promise<'im
 
 async function handleImplement(item: Suggestion, config: any, category: string): Promise<void> {
   console.log('');
-  console.log(chalk.cyan('  🔧 Implementing fix...'));
+  console.log(INFO('  🔧 Implementing fix...'));
   console.log('');
 
   if (config.provider === 'local' && config.localEndpoint) {
     const fileContent = readFileContent(item.filePath);
 
     if (!fileContent) {
-      console.log(chalk.red(`  ❌ Could not read file: ${item.filePath}`));
+      console.log(ERROR(`  ❌ Could not read file: ${item.filePath}`));
       return;
     }
 
@@ -281,7 +294,8 @@ Return the complete file content now:`;
         { role: 'user', content: prompt },
       ];
 
-      const response = await callLocalModel(config.localEndpoint, messages);
+      const localResult = await callLocalModel(config.localEndpoint, messages);
+      const response = typeof localResult === 'object' && localResult.text ? localResult.text : localResult as unknown as string;
 
       const lines = response.split('\n');
       const firstLine = lines[0].trim();
@@ -295,12 +309,12 @@ Return the complete file content now:`;
 
       // ─── VALIDATION ───
       if (newContent.includes('```') || newContent.includes('## ') || newContent.startsWith('Here') || newContent.startsWith('I have') || newContent.startsWith('Sure')) {
-        console.log(chalk.yellow('  ⚠️  MiniBob returned explanation instead of code. Fix rejected.'));
+        console.log(WARNING('  ⚠️  MiniBob returned explanation instead of code. Fix rejected.'));
         return;
       }
 
       if (newContent.length < fileContent.length * 0.5) {
-        console.log(chalk.yellow(`  ⚠️  MiniBob's output is ${Math.round((newContent.length / fileContent.length) * 100)}% of original size. Rejecting.`));
+        console.log(WARNING(`  ⚠️  MiniBob's output is ${Math.round((newContent.length / fileContent.length) * 100)}% of original size. Rejecting.`));
         return;
       }
 
@@ -308,7 +322,7 @@ Return the complete file content now:`;
       for (const exp of originalExports) {
         const exportName = exp.split(/\s+/).pop()!;
         if (!newContent.includes(exportName)) {
-          console.log(chalk.yellow(`  ⚠️  MiniBob removed export "${exportName}". Rejecting.`));
+          console.log(WARNING(`  ⚠️  MiniBob removed export "${exportName}". Rejecting.`));
           return;
         }
       }
@@ -317,6 +331,7 @@ Return the complete file content now:`;
         filePath: item.filePath,
         content: newContent,
         isNew: false,
+        isLocal: true,
       });
 
       // Mark as implemented
@@ -328,7 +343,7 @@ Return the complete file content now:`;
       }
 
     } catch (error: any) {
-      console.log(chalk.red(`  ❌ Implementation failed: ${error.message}`));
+      console.log(ERROR(`  ❌ Implementation failed: ${error.message}`));
     }
 
   } else if (config.loggedIn && config.conversationId) {
@@ -342,7 +357,7 @@ Return the complete file content now:`;
       });
 
       if (result?.success) {
-        console.log(chalk.green(`  ✅ ${result.message}`));
+        console.log(SUCCESS(`  ✅ ${result.message}`));
         if (item.id) {
           markSuggestionById(item.id, category, 'implemented', {
             reason: 'Platform implementation',
@@ -350,13 +365,13 @@ Return the complete file content now:`;
           });
         }
       } else {
-        console.log(chalk.red('  ❌ Implementation failed on platform.'));
+        console.log(ERROR('  ❌ Implementation failed on platform.'));
       }
     } catch (error: any) {
-      console.log(chalk.red(`  ❌ ${error.message}`));
+      console.log(ERROR(`  ❌ ${error.message}`));
     }
   } else {
-    console.log(chalk.red('  ❌ No provider configured for implementation.'));
+    console.log(ERROR('  ❌ No provider configured for implementation.'));
   }
 
   console.log('');

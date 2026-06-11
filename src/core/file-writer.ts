@@ -1,7 +1,17 @@
+// File: src/core/file-writer.ts
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 import chalk from 'chalk';
+
+// ─── DESIGN TOKENS ───
+const SUCCESS = chalk.hex('#66BB6A');
+const INFO = chalk.hex('#26C6DA');
+const WARNING = chalk.hex('#FFC107');
+const ERROR = chalk.hex('#EF5350');
+const MUTED = chalk.hex('#78909C');
+const BRAND_SECONDARY = chalk.hex('#FFAB00');
+const BORDER = chalk.hex('#455A64');
 
 export interface ProposedFile {
   filePath: string;
@@ -95,21 +105,21 @@ function displayExternalFile(proposed: ProposedFile): void {
   const totalLines = proposed.content.split('\n').length;
 
   console.log('');
-  console.log(chalk.yellow(`  ┌─────────────────────────────────────────┐`));
-  console.log(chalk.yellow(`  │ 📋  EXTERNAL: ${proposed.filePath}`));
-  console.log(chalk.yellow(`  │     This file belongs to another project.`));
-  console.log(chalk.yellow(`  ├─────────────────────────────────────────┤`));
+  console.log(WARNING(`  ╔══════════════════════════════════════════════════════════╗`));
+  console.log(WARNING(`  ║`) + BRAND_SECONDARY(` 📋  EXTERNAL: ${proposed.filePath}`));
+  console.log(WARNING(`  ║`) + MUTED(`     This file belongs to another project.`));
+  console.log(WARNING(`  ╠══════════════════════════════════════════════════════════╣`));
 
   const previewLines = proposed.content.split('\n').slice(0, 6);
   for (const line of previewLines) {
-    console.log(chalk.gray(`  │ ${line}`));
+    console.log(WARNING(`  ║`) + MUTED(` ${line}`));
   }
   if (totalLines > 6) {
-    console.log(chalk.gray(`  │ ... (${totalLines - 6} more lines)`));
+    console.log(WARNING(`  ║`) + MUTED(` ... (${totalLines - 6} more lines)`));
   }
 
-  console.log(chalk.yellow(`  └─────────────────────────────────────────┘`));
-  console.log(chalk.gray(`  Copy this file manually to your project at: ${proposed.filePath}`));
+  console.log(WARNING(`  ╚══════════════════════════════════════════════════════════╝`));
+  console.log(MUTED(`  Copy this file manually to your project at: ${proposed.filePath}`));
   console.log('');
 }
 
@@ -122,43 +132,52 @@ export async function proposeAndWriteFile(proposed: ProposedFile, autoApprove: b
   const absolutePath = path.join(process.cwd(), proposed.filePath);
   const action = proposed.isNew ? 'CREATE' : 'UPDATE';
   const icon = proposed.isNew ? '📄' : '✏️';
-  const color = proposed.isNew ? chalk.green : chalk.yellow;
+  const accentColor = proposed.isNew ? SUCCESS : BRAND_SECONDARY;
   const totalLines = proposed.content.split('\n').length;
 
   if (!autoApprove) {
     console.log('');
-    console.log(color(`  ┌─────────────────────────────────────────┐`));
-    console.log(color(`  │ ${icon}  ${action}: ${proposed.filePath} (${totalLines} lines)`));
-    console.log(color(`  ├─────────────────────────────────────────┤`));
+    console.log(BORDER(`  ╔══════════════════════════════════════════════════════════╗`));
+    console.log(BORDER(`  ║`) + accentColor(` ${icon}  ${action}: `) + chalk.white(`${proposed.filePath}`) + MUTED(` (${totalLines} lines)`));
+    console.log(BORDER(`  ╠══════════════════════════════════════════════════════════╣`));
 
     const previewLines = proposed.content.split('\n').slice(0, 6);
     for (const line of previewLines) {
-      console.log(chalk.gray(`  │ ${line}`));
+      console.log(BORDER(`  ║`) + MUTED(` ${line}`));
     }
     if (totalLines > 6) {
-      console.log(chalk.gray(`  │ ... (${totalLines - 6} more lines)`));
+      console.log(BORDER(`  ║`) + MUTED(` ... (${totalLines - 6} more lines)`));
     }
 
-    console.log(color(`  └─────────────────────────────────────────┘`));
+    console.log(BORDER(`  ╚══════════════════════════════════════════════════════════╝`));
     console.log('');
 
+    const promptText = INFO(`  💾 ${action === 'CREATE' ? 'Write this file' : 'Apply changes'}? `) + MUTED(`(y/n/path): `);
     let answer: string;
+
     if (existingRl) {
-      answer = await new Promise<string>(resolve => {
-        existingRl.question(chalk.cyan(`  💾 ${action === 'CREATE' ? 'Write this file' : 'Apply changes'}? (y/n/path): `), resolve);
-      });
+      // Windows + Node 24: readline interfaces deadlock on shared stdin.
+      // Use synchronous stdin read — no buffering, no race conditions.
+      existingRl.pause();
+      process.stdout.write(promptText);
+      const buf = Buffer.alloc(1024);
+      const bytesRead = fs.readSync(0, buf, 0, 1024, null);
+      answer = buf.toString('utf-8', 0, bytesRead).replace(/\r?\n/, '').trim();
+      existingRl.resume();
     } else {
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       answer = await new Promise<string>(resolve => {
-        rl.question(chalk.cyan(`  💾 ${action === 'CREATE' ? 'Write this file' : 'Apply changes'}? (y/n/path): `), resolve);
+        rl.question(promptText, (ans) => {
+          rl.close();
+          resolve(ans);
+        });
       });
-      rl.close();
     }
 
     const trimmed = answer.trim().toLowerCase();
 
     if (trimmed === 'n' || trimmed === 'no') {
-      console.log(chalk.gray('  ⏭️  Skipped.'));
+      console.log(MUTED('  ⏭️  Skipped.'));
       return false;
     }
 
@@ -187,15 +206,15 @@ function writeFile(targetPath: string, content: string, originalFilePath: string
     fs.writeFileSync(targetPath, content, 'utf-8');
 
     const relativePath = path.relative(process.cwd(), targetPath);
-    console.log(chalk.green(`  ✅ Written: ${relativePath}`));
+    console.log(SUCCESS(`  ✅ Written: ${relativePath}`));
     if (!isNew) {
-      console.log(chalk.gray(`  📦 Backup saved to .bob-backups/`));
+      console.log(MUTED(`  📦 Backup saved to .bob-backups/`));
     }
     console.log('');
     return true;
 
   } catch (error: any) {
-    console.log(chalk.red(`  ❌ Write failed: ${error.message}`));
+    console.log(ERROR(`  ❌ Write failed: ${error.message}`));
     return false;
   }
 }

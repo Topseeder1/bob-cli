@@ -23,16 +23,16 @@ Every other AI coding assistant lives in a browser, disconnected from your actua
 
 | Feature | Bob's CLI | Claude Code | Copilot | Cursor |
 |---------|-----------|-------------|---------|--------|
-| Local file awareness | ✅ | ✅ | ❌ | ✅ |
-| Zero-cost local model | ✅ | ❌ | ❌ | ❌ |
-| Behavioral profiling | ✅ | ❌ | ❌ | ❌ |
-| Personalization Mode | ✅ | ❌ | ❌ | ❌ |
-| Conversation persistence | ✅ | ❌ | ❌ | Partial |
-| Deep Dives & Forks | ✅ | ❌ | ❌ | ❌ |
-| Remote execution (SovereignLink) | ✅ | ❌ | ❌ | ❌ |
-| Cross-surface sync (CLI ↔ Web) | ✅ | ❌ | ❌ | ❌ |
-| Autonomous code repair | ✅ | Manual | ❌ | Partial |
-| Source code stays on-device | ✅ | ❌ | ❌ | ❌ |
+| Local file awareness | ✅ | ✅           | ✅ | ✅ |
+| Zero-cost local model | ✅ | ✅           | ❌ | ❌ |
+| Behavioral profiling | ✅ | ❌           | ❌ | ❌ |
+| Personalization Mode | ✅ | ❌           | ❌ | ❌ |
+| Conversation persistence | ✅ | ✅           | ❌ | Partial |
+| Deep Dives & Forks | ✅ | ❌           | ❌ | ❌ |
+| Remote execution (SovereignLink) | ✅ | Partial     | ❌ | ❌ |
+| Cross-surface sync (CLI ↔ Web) | ✅ | ✅           | ❌ | ❌ |
+| Autonomous code repair | ✅ | ✅           | ❌ | ✅ |
+| Source code stays on-device | ✅ | ✅           | ❌ | ✅ |
 
 ---
 

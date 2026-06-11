@@ -5,15 +5,29 @@ import * as readline from 'readline';
 import { getConfig, setConfigValue } from '../core/config-store.js';
 import { callCloudFunction } from '../core/api-client.js';
 import { callLocalModel, LocalChatMessage } from '../ai/providers/local.js';
-import { renderMarkdown } from '../ui/renderer.js';
 import { startDeepDiveAnimation } from '../ui/animations/deep-dive.js';
 import { buildLocalContext } from '../core/context-builder.js';
 import { getRelevantFileContents } from '../core/file-retrieval.js';
-import { stripCodeBlockFromResponse, processAllProposedFiles } from '../core/file-writer.js';
+import { stripCodeBlockFromResponse, processAllProposedFiles, extractAllProposedFiles } from '../core/file-writer.js';
+import {
+  startElapsedTimer,
+  stopElapsedTimer,
+  renderUserMessage,
+  renderBobResponse,
+  renderFileDiff,
+  renderConstraintsTile,
+  ResponseMetadata,
+} from '../ui/chat-renderer.js';
 
-const DIVE_BORDER = chalk.blue;
+// ─── DESIGN TOKENS ───
+const BRAND_SECONDARY = chalk.hex('#FFAB00');
+const SUCCESS = chalk.hex('#66BB6A');
+const INFO = chalk.hex('#26C6DA');
+const WARNING = chalk.hex('#FFC107');
+const ERROR = chalk.hex('#EF5350');
+const MUTED = chalk.hex('#78909C');
+const MODE_DEEPDIVE = chalk.hex('#0097A7');
 const AMBER = chalk.hex('#FFAB00');
-const GRAY = chalk.gray;
 const BORDER = chalk.hex('#455A64');
 
 export function registerDeepDiveCommand(program: Command): void {
@@ -22,39 +36,39 @@ export function registerDeepDiveCommand(program: Command): void {
     .description('List all deep dives in the current conversation')
     .action(async () => {
       const config = getConfig();
-      if (!config.loggedIn || !config.authToken) { console.log(''); console.log(chalk.red('  ❌ Not logged in. Deep dives require Tier 3.')); console.log(''); return; }
-      if (!config.conversationId) { console.log(''); console.log(chalk.red('  ❌ No active conversation.')); console.log(''); return; }
+      if (!config.loggedIn || !config.authToken) { console.log(''); console.log(ERROR('  ❌ Not logged in. Deep dives require Tier 3.')); console.log(''); return; }
+      if (!config.conversationId) { console.log(''); console.log(ERROR('  ❌ No active conversation.')); console.log(''); return; }
 
-      const spinner = ora({ text: chalk.cyan('  Loading deep dives...'), spinner: 'dots' }).start();
+      const spinner = ora({ text: MODE_DEEPDIVE('  Loading deep dives...'), spinner: 'dots' }).start();
       try {
         const result = await callCloudFunction('listCLIDeepDives', { conversationId: config.conversationId });
         spinner.stop();
         const dives = result.deepDives || [];
 
         console.log('');
-        console.log(DIVE_BORDER('  ╔══════════════════════════════════════════╗'));
-        console.log(DIVE_BORDER('  ║') + chalk.bold.blue('  🤿 Deep Dives                          ') + DIVE_BORDER('║'));
-        console.log(DIVE_BORDER('  ╠══════════════════════════════════════════╣'));
+        console.log(MODE_DEEPDIVE('  ╔══════════════════════════════════════════╗'));
+        console.log(MODE_DEEPDIVE('  ║') + chalk.bold(MODE_DEEPDIVE('  🤿 Deep Dives                          ')) + MODE_DEEPDIVE('║'));
+        console.log(MODE_DEEPDIVE('  ╠══════════════════════════════════════════╣'));
 
         if (dives.length === 0) {
-          console.log(DIVE_BORDER('  ║') + chalk.gray('  No deep dives yet.                      ') + DIVE_BORDER('║'));
-          console.log(DIVE_BORDER('  ║') + chalk.gray('  Use `bob deepdive` to create one.       ') + DIVE_BORDER('║'));
+          console.log(MODE_DEEPDIVE('  ║') + MUTED('  No deep dives yet.                      ') + MODE_DEEPDIVE('║'));
+          console.log(MODE_DEEPDIVE('  ║') + MUTED('  Use `bob deepdive` to create one.       ') + MODE_DEEPDIVE('║'));
         } else {
           for (const dive of dives) {
             const preview = (dive.initiatingPrompt || 'No prompt').slice(0, 35);
             const msgs = dive.messageCount || 0;
-            console.log(DIVE_BORDER('  ║') + `  ${chalk.blue(dive.parentMessageId.slice(0, 8))}  ${chalk.white(preview)}${preview.length >= 35 ? '...' : ''}`);
-            console.log(DIVE_BORDER('  ║') + chalk.gray(`    ${msgs} messages | ${dive.status || 'active'}`));
+            console.log(MODE_DEEPDIVE('  ║') + `  ${MODE_DEEPDIVE(dive.parentMessageId.slice(0, 8))}  ${chalk.white(preview)}${preview.length >= 35 ? '...' : ''}`);
+            console.log(MODE_DEEPDIVE('  ║') + MUTED(`    ${msgs} messages | ${dive.status || 'active'}`));
           }
         }
 
-        console.log(DIVE_BORDER('  ╚══════════════════════════════════════════╝'));
+        console.log(MODE_DEEPDIVE('  ╚══════════════════════════════════════════╝'));
         console.log('');
-        console.log(chalk.gray('  Commands:'));
-        console.log(chalk.gray('    bob deepdive        — Create a new deep dive'));
-        console.log(chalk.gray('    bob deepdives-join  — Re-enter an existing deep dive'));
+        console.log(MUTED('  Commands:'));
+        console.log(MUTED('    bob deepdive        — Create a new deep dive'));
+        console.log(MUTED('    bob deepdives-join  — Re-enter an existing deep dive'));
         console.log('');
-      } catch (error: any) { spinner.stop(); console.log(chalk.red(`  ❌ ${error.message}`)); console.log(''); }
+      } catch (error: any) { spinner.stop(); console.log(ERROR(`  ❌ ${error.message}`)); console.log(''); }
     });
 
   program
@@ -62,38 +76,38 @@ export function registerDeepDiveCommand(program: Command): void {
     .description('Re-enter an existing deep dive')
     .action(async () => {
       const config = getConfig();
-      if (!config.loggedIn || !config.authToken) { console.log(''); console.log(chalk.red('  ❌ Not logged in. Deep dives require Tier 3.')); console.log(''); return; }
-      if (!config.conversationId) { console.log(''); console.log(chalk.red('  ❌ No active conversation.')); console.log(''); return; }
+      if (!config.loggedIn || !config.authToken) { console.log(''); console.log(ERROR('  ❌ Not logged in. Deep dives require Tier 3.')); console.log(''); return; }
+      if (!config.conversationId) { console.log(''); console.log(ERROR('  ❌ No active conversation.')); console.log(''); return; }
 
-      const spinner = ora({ text: chalk.cyan('  Loading deep dives...'), spinner: 'dots' }).start();
+      const spinner = ora({ text: MODE_DEEPDIVE('  Loading deep dives...'), spinner: 'dots' }).start();
       try {
         const result = await callCloudFunction('listCLIDeepDives', { conversationId: config.conversationId });
         spinner.stop();
         const dives = result.deepDives || [];
 
-        if (dives.length === 0) { console.log(''); console.log(chalk.yellow('  ⚠️  No deep dives in this conversation.')); console.log(chalk.gray('  Use `bob deepdive` to create one.')); console.log(''); return; }
+        if (dives.length === 0) { console.log(''); console.log(WARNING('  ⚠️  No deep dives in this conversation.')); console.log(MUTED('  Use `bob deepdive` to create one.')); console.log(''); return; }
 
         console.log('');
-        console.log(DIVE_BORDER('  ╔══════════════════════════════════════════╗'));
-        console.log(DIVE_BORDER('  ║') + chalk.bold.blue('  🤿 Select a deep dive to re-enter       ') + DIVE_BORDER('║'));
-        console.log(DIVE_BORDER('  ╠══════════════════════════════════════════╣'));
+        console.log(MODE_DEEPDIVE('  ╔══════════════════════════════════════════╗'));
+        console.log(MODE_DEEPDIVE('  ║') + chalk.bold(MODE_DEEPDIVE('  🤿 Select a deep dive to re-enter       ')) + MODE_DEEPDIVE('║'));
+        console.log(MODE_DEEPDIVE('  ╠══════════════════════════════════════════╣'));
 
         for (let i = 0; i < dives.length; i++) {
           const dive = dives[i];
           const preview = (dive.initiatingPrompt || 'No prompt').slice(0, 35);
           const msgs = dive.messageCount || 0;
-          console.log(DIVE_BORDER('  ║') + `  ${chalk.cyan(String(i + 1).padStart(2))}. ${chalk.white(preview)}${preview.length >= 35 ? '...' : ''}`);
-          console.log(DIVE_BORDER('  ║') + chalk.gray(`      ${msgs} messages | ${dive.status || 'active'}`));
+          console.log(MODE_DEEPDIVE('  ║') + `  ${INFO(String(i + 1).padStart(2))}. ${chalk.white(preview)}${preview.length >= 35 ? '...' : ''}`);
+          console.log(MODE_DEEPDIVE('  ║') + MUTED(`      ${msgs} messages | ${dive.status || 'active'}`));
         }
 
-        console.log(DIVE_BORDER('  ╚══════════════════════════════════════════╝'));
+        console.log(MODE_DEEPDIVE('  ╚══════════════════════════════════════════╝'));
         console.log('');
 
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        const answer = await new Promise<string>(resolve => { rl.question(chalk.blue('  Select (1-' + dives.length + ') or 0 to cancel: '), resolve); });
+        const answer = await new Promise<string>(resolve => { rl.question(MODE_DEEPDIVE('  Select (1-' + dives.length + ') or 0 to cancel: '), resolve); });
         const selection = parseInt(answer.trim());
 
-        if (isNaN(selection) || selection === 0 || selection < 1 || selection > dives.length) { rl.close(); console.log(chalk.gray('  Cancelled.')); return; }
+        if (isNaN(selection) || selection === 0 || selection < 1 || selection > dives.length) { rl.close(); console.log(MUTED('  Cancelled.')); return; }
 
         const selectedDive = dives[selection - 1];
         const parentMessageId = selectedDive.parentMessageId;
@@ -106,7 +120,7 @@ export function registerDeepDiveCommand(program: Command): void {
 
         await runDeepDiveSession(config, config.conversationId!, parentMessageId, initiatingPrompt, rl);
         rl.close();
-      } catch (error: any) { spinner.stop(); console.log(chalk.red(`  ❌ ${error.message}`)); console.log(''); }
+      } catch (error: any) { spinner.stop(); console.log(ERROR(`  ❌ ${error.message}`)); console.log(''); }
     });
 
   program
@@ -114,8 +128,8 @@ export function registerDeepDiveCommand(program: Command): void {
     .description('Create a new deep dive on a Bob message')
     .action(async () => {
       const config = getConfig();
-      if (!config.loggedIn || !config.authToken) { console.log(''); console.log(chalk.red('  ❌ Not logged in. Deep dives require Tier 3.')); console.log(chalk.gray('  Run `bob login` to authenticate.')); console.log(''); return; }
-      if (!config.conversationId) { console.log(''); console.log(chalk.red('  ❌ No active conversation.')); console.log(chalk.gray('  Join one with `bob conversations join` first.')); console.log(''); return; }
+      if (!config.loggedIn || !config.authToken) { console.log(''); console.log(ERROR('  ❌ Not logged in. Deep dives require Tier 3.')); console.log(MUTED('  Run `bob login` to authenticate.')); console.log(''); return; }
+      if (!config.conversationId) { console.log(''); console.log(ERROR('  ❌ No active conversation.')); console.log(MUTED('  Join one with `bob conversations join` first.')); console.log(''); return; }
 
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       await enterDeepDive(config, config.conversationId!, rl);
@@ -124,35 +138,35 @@ export function registerDeepDiveCommand(program: Command): void {
 }
 
 export async function enterDeepDive(config: any, conversationId: string, rl: readline.Interface): Promise<void> {
-  if (!config.loggedIn || !config.authToken) { console.log(chalk.red('  ❌ Deep dives require Tier 3 (platform login).')); return; }
+  if (!config.loggedIn || !config.authToken) { console.log(ERROR('  ❌ Deep dives require Tier 3 (platform login).')); return; }
 
-  const spinner = ora({ text: chalk.cyan('  Loading messages...'), spinner: 'dots' }).start();
+  const spinner = ora({ text: MODE_DEEPDIVE('  Loading messages...'), spinner: 'dots' }).start();
   let messages: any[];
   try {
     const result = await callCloudFunction('listCLIDeepDives', { conversationId, action: 'listMessages' });
     messages = result.messages || [];
     spinner.stop();
-  } catch (error: any) { spinner.stop(); console.log(chalk.red(`  ❌ ${error.message}`)); return; }
+  } catch (error: any) { spinner.stop(); console.log(ERROR(`  ❌ ${error.message}`)); return; }
 
-  if (messages.length === 0) { console.log(chalk.yellow('  ⚠️  No Bob messages found to deep dive on.')); return; }
+  if (messages.length === 0) { console.log(WARNING('  ⚠️  No Bob messages found to deep dive on.')); return; }
 
   console.log('');
-  console.log(DIVE_BORDER('  ╔══════════════════════════════════════════╗'));
-  console.log(DIVE_BORDER('  ║') + chalk.bold.blue('  🤿 Select a message to deep dive on     ') + DIVE_BORDER('║'));
-  console.log(DIVE_BORDER('  ╠══════════════════════════════════════════╣'));
+  console.log(MODE_DEEPDIVE('  ╔══════════════════════════════════════════╗'));
+  console.log(MODE_DEEPDIVE('  ║') + chalk.bold(MODE_DEEPDIVE('  🤿 Select a message to deep dive on     ')) + MODE_DEEPDIVE('║'));
+  console.log(MODE_DEEPDIVE('  ╠══════════════════════════════════════════╣'));
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     const preview = (msg.message || '').slice(0, 40);
-    console.log(DIVE_BORDER('  ║') + `  ${chalk.cyan(String(i + 1).padStart(2))}. ${chalk.white(preview)}${preview.length >= 40 ? '...' : ''}`);
+    console.log(MODE_DEEPDIVE('  ║') + `  ${INFO(String(i + 1).padStart(2))}. ${chalk.white(preview)}${preview.length >= 40 ? '...' : ''}`);
   }
 
-  console.log(DIVE_BORDER('  ╚══════════════════════════════════════════╝'));
+  console.log(MODE_DEEPDIVE('  ╚══════════════════════════════════════════╝'));
   console.log('');
 
-  const answer = await new Promise<string>(resolve => { rl.question(chalk.blue('  Select (1-' + messages.length + ') or 0 to cancel: '), resolve); });
+  const answer = await new Promise<string>(resolve => { rl.question(MODE_DEEPDIVE('  Select (1-' + messages.length + ') or 0 to cancel: '), resolve); });
   const selection = parseInt(answer.trim());
-  if (isNaN(selection) || selection === 0 || selection < 1 || selection > messages.length) { console.log(chalk.gray('  Cancelled.')); return; }
+  if (isNaN(selection) || selection === 0 || selection < 1 || selection > messages.length) { console.log(MUTED('  Cancelled.')); return; }
 
   const selectedMessage = messages[selection - 1];
   const parentMessageId = selectedMessage.id;
@@ -169,7 +183,7 @@ export async function enterDeepDive(config: any, conversationId: string, rl: rea
   } catch (error: any) {
     animation.stop();
     await new Promise(resolve => setTimeout(resolve, 200));
-    console.log(chalk.red(`  ❌ Could not initiate deep dive: ${error.message}`));
+    console.log(ERROR(`  ❌ Could not initiate deep dive: ${error.message}`));
   }
 }
 
@@ -178,49 +192,55 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
   const isLocalProvider = config.provider === 'local' && config.localEndpoint;
 
   console.log('');
-  console.log(DIVE_BORDER('  ╔══════════════════════════════════════════════════════╗'));
-  console.log(DIVE_BORDER('  ║') + chalk.bold.blue('  🤿 DEEP DIVE                                       ') + DIVE_BORDER('║'));
-  console.log(DIVE_BORDER('  ║') + chalk.gray(`  On: "${previewText}"`));
-  if (isLocalProvider) { console.log(DIVE_BORDER('  ║') + chalk.gray('  Provider: Local model (sovereign handoff)')); }
-  console.log(DIVE_BORDER('  ╠══════════════════════════════════════════════════════╣'));
-  console.log(DIVE_BORDER('  ║') + chalk.gray('  Commands: /surface  /promote  /clear  /personalized ') + DIVE_BORDER('║'));
-  console.log(DIVE_BORDER('  ╚══════════════════════════════════════════════════════╝'));
+  console.log(MODE_DEEPDIVE('  ╔══════════════════════════════════════════════════════╗'));
+  console.log(MODE_DEEPDIVE('  ║') + chalk.bold(MODE_DEEPDIVE('  🤿 DEEP DIVE                                       ')) + MODE_DEEPDIVE('║'));
+  console.log(MODE_DEEPDIVE('  ║') + MUTED(`  On: "${previewText}"`));
+  if (isLocalProvider) { console.log(MODE_DEEPDIVE('  ║') + MUTED('  Provider: Local model (sovereign handoff)')); }
+  console.log(MODE_DEEPDIVE('  ╠══════════════════════════════════════════════════════╣'));
+  console.log(MODE_DEEPDIVE('  ║') + MUTED('  Commands: /surface  /promote  /clear  /constraints  ') + MODE_DEEPDIVE('║'));
+  console.log(MODE_DEEPDIVE('  ╚══════════════════════════════════════════════════════╝'));
   console.log('');
 
   let lastBobResponse = '';
+  let lastConstraints: string[] = [];
 
   return new Promise<void>((resolve) => {
     const deepDivePrompt = (): void => {
-      rl.question(chalk.blue('  🤿 You: '), async (input) => {
+      rl.question(MODE_DEEPDIVE('  🤿 You: '), async (input) => {
         const trimmed = input.trim();
         if (!trimmed) { deepDivePrompt(); return; }
 
         if (trimmed === '/surface' || trimmed === '/exit') {
           console.log('');
-          console.log(DIVE_BORDER('  ╔══════════════════════════════════════════╗'));
-          console.log(DIVE_BORDER('  ║') + chalk.bold.blue('  🏊 Surfaced from Deep Dive              ') + DIVE_BORDER('║'));
-          console.log(DIVE_BORDER('  ║') + chalk.gray(`  Back in: ${conversationId.slice(0, 24)}...`));
-          console.log(DIVE_BORDER('  ╚══════════════════════════════════════════╝'));
+          console.log(MODE_DEEPDIVE('  ╔══════════════════════════════════════════╗'));
+          console.log(MODE_DEEPDIVE('  ║') + chalk.bold(MODE_DEEPDIVE('  🏊 Surfaced from Deep Dive              ')) + MODE_DEEPDIVE('║'));
+          console.log(MODE_DEEPDIVE('  ║') + MUTED(`  Back in: ${conversationId.slice(0, 24)}...`));
+          console.log(MODE_DEEPDIVE('  ╚══════════════════════════════════════════╝'));
           console.log('');
           resolve(); return;
         }
 
         if (trimmed === '/promote') {
-          const promoSpinner = ora({ text: chalk.blue('  Promoting deep dive...'), spinner: 'dots' }).start();
+          const promoSpinner = ora({ text: MODE_DEEPDIVE('  Promoting deep dive...'), spinner: 'dots' }).start();
           try {
             await callCloudFunction('promoteDeepDive', { conversationId, parentMessageId });
             promoSpinner.stop();
-            console.log(''); console.log(chalk.green('  ✅ Deep dive promoted! Summary merged into main conversation.')); console.log('');
-          } catch (error: any) { promoSpinner.stop(); console.log(chalk.red(`  ❌ Promote failed: ${error.message}`)); console.log(''); }
+            console.log(''); console.log(SUCCESS('  ✅ Deep dive promoted! Summary merged into main conversation.')); console.log('');
+          } catch (error: any) { promoSpinner.stop(); console.log(ERROR(`  ❌ Promote failed: ${error.message}`)); console.log(''); }
           resolve(); return;
         }
 
         if (trimmed === '/clear') {
           console.clear();
-          console.log(DIVE_BORDER('  ╔══════════════════════════════════════════╗'));
-          console.log(DIVE_BORDER('  ║') + chalk.bold.blue('  🤿 DEEP DIVE (continued)                ') + DIVE_BORDER('║'));
-          console.log(DIVE_BORDER('  ╚══════════════════════════════════════════╝'));
+          console.log(MODE_DEEPDIVE('  ╔══════════════════════════════════════════╗'));
+          console.log(MODE_DEEPDIVE('  ║') + chalk.bold(MODE_DEEPDIVE('  🤿 DEEP DIVE (continued)                ')) + MODE_DEEPDIVE('║'));
+          console.log(MODE_DEEPDIVE('  ╚══════════════════════════════════════════╝'));
           console.log('');
+          deepDivePrompt(); return;
+        }
+
+        if (trimmed === '/constraints') {
+          renderConstraintsTile(lastConstraints);
           deepDivePrompt(); return;
         }
 
@@ -230,35 +250,37 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
           console.log(BORDER('  ┌─────────────────────────────────────────────────────────┐'));
           console.log(BORDER('  │') + AMBER('  ⚠️  Personalization Mode'));
           console.log(BORDER('  │'));
-          console.log(BORDER('  │') + GRAY('  This mode is not available inside deep dives.'));
-          console.log(BORDER('  │') + GRAY('  Deep dives are powered by the Frank Reasoning Engine'));
-          console.log(BORDER('  │') + GRAY('  which already adapts using your DNA profile.'));
+          console.log(BORDER('  │') + MUTED('  This mode is not available inside deep dives.'));
+          console.log(BORDER('  │') + MUTED('  Deep dives are powered by the Frank Reasoning Engine'));
+          console.log(BORDER('  │') + MUTED('  which already adapts using your DNA profile.'));
           console.log(BORDER('  │'));
-          console.log(BORDER('  │') + GRAY('  To use full Personalization Mode, return to the'));
-          console.log(BORDER('  │') + GRAY('  main conversation.'));
+          console.log(BORDER('  │') + MUTED('  To use full Personalization Mode, return to the'));
+          console.log(BORDER('  │') + MUTED('  main conversation.'));
           console.log(BORDER('  │'));
           console.log(BORDER('  └─────────────────────────────────────────────────────────┘'));
           console.log('');
 
           const answer = await new Promise<string>(resolve => {
-            rl.question(chalk.blue('  Leave deep dive for main conversation? (y/N): '), resolve);
+            rl.question(MODE_DEEPDIVE('  Leave deep dive for main conversation? (y/N): '), resolve);
           });
 
           if (answer.trim().toLowerCase() === 'y') {
             console.log('');
-            console.log(chalk.green('  ✅ Surfacing from deep dive. Personalization Mode will activate in main conversation.'));
+            console.log(SUCCESS('  ✅ Surfacing from deep dive. Personalization Mode will activate in main conversation.'));
             console.log('');
             resolve();
             return;
           }
 
-          console.log(chalk.gray('  Staying in deep dive.'));
+          console.log(MUTED('  Staying in deep dive.'));
           console.log('');
           deepDivePrompt();
           return;
         }
 
-        const msgSpinner = ora({ text: chalk.blue('  🤿 Bob is diving deep...'), spinner: 'dots' }).start();
+        // ─── SEND MESSAGE ───
+        renderUserMessage(trimmed);
+        startElapsedTimer();
 
         try {
           let localContext = buildLocalContext(process.cwd());
@@ -278,46 +300,59 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
 
           if (isLocalProvider) {
             const handoffResult = await callCloudFunction('generateDeepDiveResponse', {
-                                    conversationId,
-                                    parentMessageId,
-                                    userMessage: trimmed,
-                                    isLocalModel: false,
-                                    activePersonaId: null,
-                                    localContext,
-                                    cliMode: true,
-                                  });
+              conversationId,
+              parentMessageId,
+              userMessage: trimmed,
+              isLocalModel: true,
+              activePersonaId: null,
+              localContext,
+              cliMode: true,
+            });
             if (!handoffResult?.isHandoff || !handoffResult?.masterPrompt) { throw new Error('Handoff failed — no master prompt returned.'); }
             const localMessages: LocalChatMessage[] = [{ role: 'user', content: handoffResult.masterPrompt }];
             responseText = await callLocalModel(config.localEndpoint!, localMessages);
             await callCloudFunction('saveCLIDeepDiveMessage', { conversationId, parentMessageId, message: responseText, sender: 'bob', origin: 'local-sovereign' });
           } else {
-              await callCloudFunction('generateDeepDiveResponse', { conversationId, parentMessageId, userMessage: trimmed, isLocalModel: false, activePersonaId: null, localContext, cliMode: true });
+            await callCloudFunction('generateDeepDiveResponse', { conversationId, parentMessageId, userMessage: trimmed, isLocalModel: false, activePersonaId: null, localContext, cliMode: true });
             const latestResult = await callCloudFunction('listCLIDeepDives', { conversationId, action: 'getLatestSandboxMessage', parentMessageId });
             responseText = latestResult?.message || 'Deep dive response saved.';
           }
 
-          msgSpinner.stop();
+          // ─── STOP TIMER ───
+          const elapsedMs = stopElapsedTimer();
 
           lastBobResponse = responseText;
 
+          // ─── RENDER BOB'S RESPONSE ───
           const displayResponse = stripCodeBlockFromResponse(responseText);
-          const rendered = renderMarkdown(displayResponse);
+          const metadata: ResponseMetadata = {
+            elapsedMs,
+            tokenCount: undefined,
+            selectedFiles: [],
+            constraints: [],
+            mode: 'deepdive',
+            tier: config.provider === 'local' ? 'local' : 'platform',
+            conversationId,
+          };
 
-          console.log('');
-          console.log(DIVE_BORDER('  ╔══════════════════════════════════════════════════════╗'));
-          console.log(DIVE_BORDER('  ║') + chalk.bold.blue('  🤿 Bob (Deep Dive):                                 ') + DIVE_BORDER('║'));
-          console.log(DIVE_BORDER('  ╠══════════════════════════════════════════════════════╣'));
+          await renderBobResponse(displayResponse, metadata);
 
-          for (const line of rendered.split('\n')) {
-            console.log(DIVE_BORDER('  ║') + `  ${line}`);
+          // ─── RENDER DIFF AFTER RESPONSE ───
+          const proposals = extractAllProposedFiles(responseText);
+          for (const proposed of proposals) {
+            if (proposed.isLocal) {
+              renderFileDiff(proposed.filePath, proposed.content, proposed.isNew);
+            }
           }
 
-          console.log(DIVE_BORDER('  ╚══════════════════════════════════════════════════════╝'));
-          console.log('');
-
+          // ─── PROCESS FILE PROPOSALS ───
           await processAllProposedFiles(responseText, false, rl);
 
-        } catch (error: any) { msgSpinner.stop(); console.log(chalk.red(`  ❌ ${error.message}`)); console.log(''); }
+        } catch (error: any) {
+          stopElapsedTimer();
+          console.log(ERROR(`  ❌ ${error.message}`));
+          console.log('');
+        }
 
         deepDivePrompt();
       });

@@ -6,11 +6,14 @@ import { getConfig, setConfigValue } from '../core/config-store.js';
 import { callCloudFunction } from '../core/api-client.js';
 import { renderMarkdown } from '../ui/renderer.js';
 
-const GREEN = chalk.hex('#66BB6A');
-const AMBER = chalk.hex('#FFAB00');
-const RED = chalk.hex('#EF5350');
-const GRAY = chalk.gray;
-const CYAN = chalk.cyan;
+// ─── DESIGN TOKENS ───
+const BRAND_PRIMARY = chalk.hex('#E66F24');
+const BRAND_SECONDARY = chalk.hex('#FFAB00');
+const SUCCESS = chalk.hex('#66BB6A');
+const INFO = chalk.hex('#26C6DA');
+const WARNING = chalk.hex('#FFC107');
+const ERROR = chalk.hex('#EF5350');
+const MUTED = chalk.hex('#78909C');
 const BORDER = chalk.hex('#455A64');
 
 export function registerRemoteCommand(program: Command): void {
@@ -26,8 +29,8 @@ export function registerRemoteCommand(program: Command): void {
 
       if (!config.loggedIn || !config.authToken) {
         console.log('');
-        console.log(RED('  ❌ Not logged in.'));
-        console.log(GRAY('  Run `bob login` to authenticate.'));
+        console.log(ERROR('  ❌ Not logged in.'));
+        console.log(MUTED('  Run `bob login` to authenticate.'));
         console.log('');
         return;
       }
@@ -54,8 +57,8 @@ export function registerRemoteCommand(program: Command): void {
       const validTypes = ['chat', 'consult', 'index', 'analyse', 'push', 'autonomy'];
       if (!validTypes.includes(type)) {
         console.log('');
-        console.log(RED(`  ❌ Invalid command type: "${type}"`));
-        console.log(GRAY(`  Valid types: ${validTypes.join(', ')}`));
+        console.log(ERROR(`  ❌ Invalid command type: "${type}"`));
+        console.log(MUTED(`  Valid types: ${validTypes.join(', ')}`));
         console.log('');
         return;
       }
@@ -66,8 +69,8 @@ export function registerRemoteCommand(program: Command): void {
 
       if ((type === 'chat' || type === 'consult' || type === 'push') && !message) {
         console.log('');
-        console.log(RED(`  ❌ ${type} requires a message.`));
-        console.log(GRAY(`  Example: bob remote ${type} "your message here"`));
+        console.log(ERROR(`  ❌ ${type} requires a message.`));
+        console.log(MUTED(`  Example: bob remote ${type} "your message here"`));
         console.log('');
         return;
       }
@@ -81,8 +84,7 @@ export function registerRemoteCommand(program: Command): void {
 // ═══════════════════════════════════════════════════════════
 
 async function runInteractiveRemote(config: any, targetSession?: string): Promise<void> {
-  // Check for active bob first
-  const spinner = ora({ text: CYAN('  Connecting to Active Bob...'), spinner: 'dots' }).start();
+  const spinner = ora({ text: INFO('  Connecting to Active Bob...'), spinner: 'dots' }).start();
 
   let activeBobName = 'Unknown';
   try {
@@ -94,8 +96,8 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
     if (sessions.length === 0) {
       spinner.stop();
       console.log('');
-      console.log(RED('  🔴 No Active Bob found on this conversation.'));
-      console.log(GRAY('  Run `bob serve` on the target machine first.'));
+      console.log(ERROR('  🔴 No Active Bob found on this conversation.'));
+      console.log(MUTED('  Run `bob serve` on the target machine first.'));
       console.log('');
       return;
     }
@@ -104,20 +106,23 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
     spinner.stop();
   } catch (error: any) {
     spinner.stop();
-    console.log(RED(`  ❌ ${error.message}`));
+    console.log(ERROR(`  ❌ ${error.message}`));
     return;
   }
 
   console.log('');
   console.log(BORDER('  ╔══════════════════════════════════════════════════════════╗'));
-  console.log(BORDER('  ║') + CYAN(`  🌐 Active Bob — Remote Session (${activeBobName})`) + BORDER(''));
+  console.log(BORDER('  ║') + INFO(`  🌐 Active Bob — Remote Session`) + MUTED(` (${activeBobName})`));
   console.log(BORDER('  ╠══════════════════════════════════════════════════════════╣'));
-  console.log(BORDER('  ║') + GRAY(`  Conversation: ${config.conversationId?.slice(0, 28)}...`));
-  console.log(BORDER('  ║') + GRAY('  Commands dispatched to the remote machine.'));
-  console.log(BORDER('  ║') + GRAY('  Type your message. /exit to disconnect.'));
-  console.log(BORDER('  ║') + GRAY('  /consult "msg" for consultant mode.'));
-  console.log(BORDER('  ║') + GRAY('  /push "msg" to git push remotely.'));
-  console.log(BORDER('  ║') + GRAY('  /index to re-index remotely.'));
+  console.log(BORDER('  ║') + MUTED(`  Conversation: ${config.conversationId?.slice(0, 28)}...`));
+  console.log(BORDER('  ║') + MUTED('  Commands dispatched to the remote machine.'));
+  console.log(BORDER('  ║'));
+  console.log(BORDER('  ║') + chalk.white('  Slash Commands:'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /consult "msg"  — Strategic advice'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /push "msg"     — Git commit & push'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /index           — Re-index project'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /analyse         — Run analysis'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /exit            — Disconnect'));
   console.log(BORDER('  ╚══════════════════════════════════════════════════════════╝'));
   console.log('');
 
@@ -127,7 +132,7 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
   });
 
   const prompt = (): void => {
-    rl.question(chalk.green('  You (remote): '), async (input) => {
+    rl.question(INFO('  You (remote): '), async (input) => {
       const trimmed = input.trim();
 
       if (!trimmed) {
@@ -138,7 +143,7 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
       // ─── /exit ───
       if (trimmed === '/exit' || trimmed === '/quit') {
         console.log('');
-        console.log(GRAY('  📡 Disconnected from remote session.'));
+        console.log(MUTED('  📡 Disconnected from remote session.'));
         console.log('');
         rl.close();
         return;
@@ -150,7 +155,7 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
         if (msg) {
           await dispatchAndShow(config, 'consult', { message: msg, conversationId: config.conversationId }, targetSession);
         } else {
-          console.log(RED('  ❌ Provide a message: /consult "your question"'));
+          console.log(ERROR('  ❌ Provide a message: /consult "your question"'));
         }
         prompt();
         return;
@@ -162,7 +167,7 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
         if (msg) {
           await dispatchAndShow(config, 'push', { message: msg, conversationId: config.conversationId }, targetSession);
         } else {
-          console.log(RED('  ❌ Provide a commit message: /push "your message"'));
+          console.log(ERROR('  ❌ Provide a commit message: /push "your message"'));
         }
         prompt();
         return;
@@ -192,7 +197,7 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
 }
 
 async function dispatchAndShow(config: any, type: string, payload: any, targetSession?: string): Promise<void> {
-  const spinner = ora({ text: CYAN(`  📡 Active Bob executing: ${type}...`), spinner: 'dots' }).start();
+  const spinner = ora({ text: BRAND_SECONDARY(`  📡 Active Bob executing: ${type}...`), spinner: 'dots' }).start();
 
   try {
     const result = await callCloudFunction('sendRemoteCommand', {
@@ -204,7 +209,7 @@ async function dispatchAndShow(config: any, type: string, payload: any, targetSe
 
     if (!result?.success) {
       spinner.stop();
-      console.log(RED(`  ❌ ${result?.message || 'Failed to dispatch.'}`));
+      console.log(ERROR(`  ❌ ${result?.message || 'Failed to dispatch.'}`));
       console.log('');
       return;
     }
@@ -225,23 +230,23 @@ async function dispatchAndShow(config: any, type: string, payload: any, targetSe
           if (pollResult.result?.text) {
             const rendered = renderMarkdown(pollResult.result.text);
             console.log('');
-            console.log(GRAY('  ─────────────────────────────────────'));
-            console.log(chalk.bold.cyan('  🤖 Bob (Remote):'));
+            console.log(MUTED('  ───────────────────────────────────────'));
+            console.log(chalk.bold(INFO('  🤖 Bob (Remote):')));
             console.log('');
             for (const line of rendered.split('\n')) {
               console.log(`  ${line}`);
             }
             console.log('');
             if (pollResult.result?.referencedFiles?.length > 0) {
-              console.log(GRAY(`  📂 Referenced: ${pollResult.result.referencedFiles.join(', ')}`));
+              console.log(MUTED(`  └─ 📂 Referenced: ${pollResult.result.referencedFiles.join(', ')}`));
             }
-            console.log(GRAY('  ─────────────────────────────────────'));
+            console.log(MUTED('  ───────────────────────────────────────'));
           } else if (pollResult.result?.message) {
             console.log('');
-            console.log(GREEN(`  ✅ ${pollResult.result.message}`));
+            console.log(SUCCESS(`  ✅ ${pollResult.result.message}`));
           } else if (pollResult.result?.error) {
             console.log('');
-            console.log(RED(`  ❌ ${pollResult.result.error}`));
+            console.log(ERROR(`  ❌ ${pollResult.result.error}`));
           }
 
           console.log('');
@@ -251,7 +256,7 @@ async function dispatchAndShow(config: any, type: string, payload: any, targetSe
         if (pollResult?.status === 'failed') {
           spinner.stop();
           console.log('');
-          console.log(RED(`  ❌ ${pollResult.result?.error || 'Command failed.'}`));
+          console.log(ERROR(`  ❌ ${pollResult.result?.error || 'Command failed.'}`));
           console.log('');
           return;
         }
@@ -263,7 +268,7 @@ async function dispatchAndShow(config: any, type: string, payload: any, targetSe
 
   } catch (error: any) {
     spinner.stop();
-    console.log(RED(`  ❌ ${error.message}`));
+    console.log(ERROR(`  ❌ ${error.message}`));
     console.log('');
   }
 }
@@ -275,13 +280,13 @@ async function dispatchAndShow(config: any, type: string, payload: any, targetSe
 async function showConnectionStatus(config: any): Promise<void> {
   if (!config.conversationId) {
     console.log('');
-    console.log(RED('  🔴 No conversation selected.'));
-    console.log(GRAY('  Run `bob remote --new` to find and connect to an Active Bob.'));
+    console.log(ERROR('  🔴 No conversation selected.'));
+    console.log(MUTED('  Run `bob remote --new` to find and connect to an Active Bob.'));
     console.log('');
     return;
   }
 
-  const spinner = ora({ text: CYAN('  Checking Active Bob status...'), spinner: 'dots' }).start();
+  const spinner = ora({ text: INFO('  Checking Active Bob status...'), spinner: 'dots' }).start();
 
   try {
     const result = await callCloudFunction('listActiveBobs', {
@@ -294,18 +299,18 @@ async function showConnectionStatus(config: any): Promise<void> {
 
     console.log('');
     console.log(BORDER('  ╔══════════════════════════════════════════════════════════╗'));
-    console.log(BORDER('  ║') + CYAN('  🌐 Remote Connection Status                            ') + BORDER('║'));
+    console.log(BORDER('  ║') + INFO('  🌐 Remote Connection Status'));
     console.log(BORDER('  ╠══════════════════════════════════════════════════════════╣'));
-    console.log(BORDER('  ║') + GRAY(`  Conversation: ${config.conversationId?.slice(0, 28)}...`));
+    console.log(BORDER('  ║') + MUTED(`  Conversation: ${config.conversationId?.slice(0, 28)}...`));
     console.log(BORDER('  ║'));
 
     if (activeSessions.length === 0) {
-      console.log(BORDER('  ║') + RED('  🔴 No Active Bob found on this conversation.'));
-      console.log(BORDER('  ║') + GRAY('  Run `bob serve` on the target machine.'));
+      console.log(BORDER('  ║') + ERROR('  🔴 No Active Bob found on this conversation.'));
+      console.log(BORDER('  ║') + MUTED('  Run `bob serve` on the target machine.'));
     } else {
       for (const session of activeSessions) {
         const ago = session.lastHeartbeat ? getTimeAgo(session.lastHeartbeat) : 'unknown';
-        console.log(BORDER('  ║') + GREEN(`  🟢 ${session.machineId}`) + GRAY(` (${session.projectName}) — ${ago}`));
+        console.log(BORDER('  ║') + SUCCESS(`  🟢 ${session.machineId}`) + MUTED(` (${session.projectName}) — ${ago}`));
       }
     }
 
@@ -314,19 +319,19 @@ async function showConnectionStatus(config: any): Promise<void> {
     console.log('');
 
     if (activeSessions.length > 0) {
-      console.log(GRAY('  Commands:'));
-      console.log(GRAY('    bob remote --interactive    — persistent session'));
-      console.log(GRAY('    bob remote chat "message"   — one-shot'));
-      console.log(GRAY('    bob remote consult "msg"    — strategic advice'));
-      console.log(GRAY('    bob remote push "msg"       — git push'));
-      console.log(GRAY('    bob remote index            — re-index'));
-      console.log(GRAY('    bob remote analyse          — run analysis'));
+      console.log(MUTED('  Commands:'));
+      console.log(MUTED('    ▸ bob remote --interactive    — Persistent session'));
+      console.log(MUTED('    ▸ bob remote chat "message"   — One-shot'));
+      console.log(MUTED('    ▸ bob remote consult "msg"    — Strategic advice'));
+      console.log(MUTED('    ▸ bob remote push "msg"       — Git push'));
+      console.log(MUTED('    ▸ bob remote index            — Re-index'));
+      console.log(MUTED('    ▸ bob remote analyse          — Run analysis'));
       console.log('');
     }
 
   } catch (error: any) {
     spinner.stop();
-    console.log(RED(`  ❌ ${error.message}`));
+    console.log(ERROR(`  ❌ ${error.message}`));
     console.log('');
   }
 }
@@ -336,7 +341,7 @@ async function showConnectionStatus(config: any): Promise<void> {
 // ═══════════════════════════════════════════════════════════
 
 async function discoverAndConnect(config: any): Promise<void> {
-  const spinner = ora({ text: CYAN('  Searching for Active Bobs...'), spinner: 'dots' }).start();
+  const spinner = ora({ text: INFO('  Searching for Active Bobs...'), spinner: 'dots' }).start();
 
   try {
     const result = await callCloudFunction('listActiveBobs', {});
@@ -346,22 +351,22 @@ async function discoverAndConnect(config: any): Promise<void> {
 
     if (bobs.length === 0) {
       console.log('');
-      console.log(AMBER('  ⚠️  No Active Bobs found.'));
-      console.log(GRAY('  Run `bob serve` on a machine to start an Active Bob.'));
+      console.log(WARNING('  ⚠️  No Active Bobs found.'));
+      console.log(MUTED('  Run `bob serve` on a machine to start an Active Bob.'));
       console.log('');
       return;
     }
 
     console.log('');
     console.log(BORDER('  ╔══════════════════════════════════════════════════════════╗'));
-    console.log(BORDER('  ║') + CYAN('  🌐 Active Bobs Available                               ') + BORDER('║'));
+    console.log(BORDER('  ║') + INFO('  🌐 Active Bobs Available'));
     console.log(BORDER('  ╠══════════════════════════════════════════════════════════╣'));
 
     for (let i = 0; i < bobs.length; i++) {
       const bob = bobs[i];
       const ago = bob.lastHeartbeat ? getTimeAgo(bob.lastHeartbeat) : 'unknown';
-      console.log(BORDER('  ║') + `  ${chalk.cyan(String(i + 1).padStart(2))}. ${GREEN('🟢')} ${chalk.white(bob.machineId)} — ${GRAY(bob.projectName)}`);
-      console.log(BORDER('  ║') + GRAY(`      Convo: ${bob.conversationTitle || bob.conversationId?.slice(0, 20) + '...'} | ${ago}`));
+      console.log(BORDER('  ║') + `  ${INFO(String(i + 1).padStart(2))}. ${SUCCESS('🟢')} ${chalk.white(bob.machineId)} — ${MUTED(bob.projectName)}`);
+      console.log(BORDER('  ║') + MUTED(`      Convo: ${bob.conversationTitle || bob.conversationId?.slice(0, 20) + '...'} | ${ago}`));
     }
 
     console.log(BORDER('  ╚══════════════════════════════════════════════════════════╝'));
@@ -369,14 +374,14 @@ async function discoverAndConnect(config: any): Promise<void> {
 
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const answer = await new Promise<string>(resolve => {
-      rl.question(chalk.cyan('  Select (1-' + bobs.length + ') or 0 to cancel: '), resolve);
+      rl.question(INFO('  Select (1-' + bobs.length + ') or 0 to cancel: '), resolve);
     });
     rl.close();
 
     const selection = parseInt(answer.trim());
 
     if (isNaN(selection) || selection === 0 || selection < 1 || selection > bobs.length) {
-      console.log(GRAY('  Cancelled.'));
+      console.log(MUTED('  Cancelled.'));
       return;
     }
 
@@ -384,14 +389,14 @@ async function discoverAndConnect(config: any): Promise<void> {
     setConfigValue('conversationId', selected.conversationId);
 
     console.log('');
-    console.log(GREEN(`  ✅ Connected to: ${selected.machineId} (${selected.projectName})`));
-    console.log(GRAY(`  Conversation: ${selected.conversationId?.slice(0, 24)}...`));
-    console.log(GRAY('  Run `bob remote --interactive` for a persistent session.'));
+    console.log(SUCCESS(`  ✅ Connected to: ${selected.machineId} (${selected.projectName})`));
+    console.log(MUTED(`  Conversation: ${selected.conversationId?.slice(0, 24)}...`));
+    console.log(MUTED('  Run `bob remote --interactive` for a persistent session.'));
     console.log('');
 
   } catch (error: any) {
     spinner.stop();
-    console.log(RED(`  ❌ ${error.message}`));
+    console.log(ERROR(`  ❌ ${error.message}`));
     console.log('');
   }
 }

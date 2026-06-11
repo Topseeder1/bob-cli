@@ -1,3 +1,4 @@
+// File: src/commands/analyse.ts
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
@@ -8,18 +9,16 @@ import { loadSummaries, loadDependencies, ensureProjectStructure, getProjectName
 import * as fs from 'fs';
 import * as path from 'path';
 
-const RED = chalk.hex('#EF5350');
-const PURPLE = chalk.hex('#AB47BC');
-const BLUE = chalk.hex('#42A5F5');
-const TEAL = chalk.hex('#26A69A');
-const AMBER = chalk.hex('#FFAB00');
-const GRAY = chalk.gray;
+// ─── DESIGN TOKENS ───
+const BRAND_PRIMARY = chalk.hex('#E66F24');
+const BRAND_SECONDARY = chalk.hex('#FFAB00');
+const SUCCESS = chalk.hex('#66BB6A');
+const INFO = chalk.hex('#26C6DA');
+const WARNING = chalk.hex('#FFC107');
+const ERROR = chalk.hex('#EF5350');
+const MUTED = chalk.hex('#78909C');
+const MODE_CONSULTANT = chalk.hex('#AB47BC');
 const BORDER = chalk.hex('#455A64');
-
-const BG_RED = chalk.bgHex('#2D1111');
-const BG_PURPLE = chalk.bgHex('#1A0D2B');
-const BG_BLUE = chalk.bgHex('#0D1B2A');
-const BG_TEAL = chalk.bgHex('#0D2420');
 
 export function registerAnalyseCommand(program: Command): void {
   program
@@ -73,7 +72,7 @@ export function registerAnalyseCommand(program: Command): void {
 
       // ─── RESULTS: Dashboard ───
       if (options.results) {
-        await showDashboard(config);
+        await showDashboard();
         return;
       }
 
@@ -89,83 +88,144 @@ export function registerAnalyseCommand(program: Command): void {
 }
 
 // ═══════════════════════════════════════════════════════════
+// ANALYSIS PROVIDER ROUTER
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Routes the analysis LLM call through the user's configured provider.
+ * - Local: calls Ollama directly (free, no backend)
+ * - Platform: calls cliAnalyseFile Cloud Function (lightweight, no side effects)
+ */
+async function callAnalysisProvider(config: any, messages: LocalChatMessage[]): Promise<string> {
+  const provider = config.provider || 'local';
+
+  if (provider === 'local') {
+    if (!config.localEndpoint) {
+      throw new Error('No local endpoint configured. Run `bob config set localEndpoint <url>`');
+    }
+    const response = await callLocalModel(config.localEndpoint, messages);
+    if (typeof response === 'object' && response.text) {
+      return response.text;
+    }
+    return response as unknown as string;
+  }
+
+  // ─── PLATFORM PROVIDERS: Call lightweight cliAnalyseFile ───
+  if (!config.loggedIn || !config.authToken) {
+    throw new Error('Provider requires authentication. Run `bob login` first.');
+  }
+
+  const systemContent = messages.find(m => m.role === 'system')?.content || '';
+  const userContent = messages.find(m => m.role === 'user')?.content || '';
+
+  const result = await callCloudFunction('cliAnalyseFile', {
+    prompt: userContent,
+    systemPrompt: systemContent,
+  });
+
+  return result?.text || '';
+}
+
+// ═══════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════
 
-async function showDashboard(config: any): Promise<void> {
-  const spinner = ora({ text: chalk.cyan('  Loading analysis results...'), spinner: 'dots' }).start();
+const DASH_WIDTH = 62;
+
+function topRule(): string { return BORDER('  ╔' + '═'.repeat(DASH_WIDTH) + '╗'); }
+function botRule(): string { return BORDER('  ╚' + '═'.repeat(DASH_WIDTH) + '╝'); }
+function midRule(): string { return BORDER('  ╠' + '═'.repeat(DASH_WIDTH) + '╣'); }
+function row(content: string): string {
+  const stripped = content.replace(/\x1B\[[0-9;]*m/g, '');
+  const pad = DASH_WIDTH - stripped.length;
+  return BORDER('  ║') + content + (pad > 0 ? ' '.repeat(pad) : '') + BORDER('║');
+}
+
+async function showDashboard(): Promise<void> {
+  const spinner = ora({ text: INFO('  Loading analysis results...'), spinner: 'dots' }).start();
 
   try {
-    let counts: { bugs: number; features: number; improvements: number; upgrades: number };
-
-    if (config.tier === 'platform' && config.provider !== 'local' && config.loggedIn && config.conversationId) {
-      const result = await callCloudFunction('getCLIAnalysisResults', {
-        conversationId: config.conversationId,
-        category: 'all',
-      });
-      counts = result?.counts;
-    } else {
-      counts = loadLocalCounts();
-    }
-
+    const counts = loadLocalCounts();
     spinner.stop();
 
     if (!counts) {
       console.log('');
-      console.log(chalk.yellow('  ⚠️  No analysis results found.'));
-      console.log(GRAY('  Run `bob analyse` first to analyse your project.'));
+      console.log(WARNING('  ⚠️  No analysis results found.'));
+      console.log(MUTED('  Run `bob analyse` first to analyse your project.'));
       console.log('');
       return;
     }
 
-    renderDashboard(counts);
+    renderAnalysisDashboard(counts);
 
   } catch (error: any) {
     spinner.stop();
-    console.log(chalk.red(`  ❌ ${error.message}`));
+    console.log(ERROR(`  ❌ ${error.message}`));
     console.log('');
   }
 }
 
-function renderDashboard(counts: { bugs: number; features: number; improvements: number; upgrades: number }): void {
+export function renderAnalysisDashboard(counts: { bugs: number; features: number; improvements: number; upgrades: number }): void {
   const total = counts.bugs + counts.features + counts.improvements + counts.upgrades;
 
+  // Calculate completion (addressed vs total found)
+  const addressed = loadAddressedCount();
+  const totalFound = total + addressed;
+  const completionPercent = totalFound === 0 ? 100 : Math.round((addressed / totalFound) * 100);
+
   console.log('');
-  console.log(BORDER('  ╔══════════════╦══════════════╦══════════════╦══════════════╗'));
-  console.log(BORDER('  ║') + AMBER(' ◆ MINIBOB ANALYSIS COMPLETE') + GRAY(`  ${total} pts`) + BORDER('       ║'));
-  console.log(BORDER('  ╠══════════════╬══════════════╬══════════════╬══════════════╣'));
+  console.log(topRule());
+  console.log(row(BRAND_SECONDARY(' ◆ MINIBOB ANALYSIS DASHBOARD')));
+  console.log(midRule());
+  console.log(row(''));
 
-  // Empty row
-  console.log(BORDER('  ║') + BG_RED('              ') + BORDER('║') + BG_PURPLE('              ') + BORDER('║') + BG_BLUE('              ') + BORDER('║') + BG_TEAL('              ') + BORDER('║'));
+  // ─── 4-COLUMN GRID ───
+  const bugLabel = ERROR(`  🔴 BUGS`);
+  const featLabel = MODE_CONSULTANT(`  🟣 FEATURES`);
+  const imprLabel = INFO(`  🔵 IMPROVEMENTS`);
+  const upgrLabel = SUCCESS(`  🟢 UPGRADES`);
 
-  // Category labels (14 visual cols per cell — emoji takes 2 cols)
-  console.log(BORDER('  ║') + BG_RED(`  ${RED('🔴 BUGS')}    `) + BORDER('║') + BG_PURPLE(`  ${PURPLE('🟣 FEAT')}    `) + BORDER('║') + BG_BLUE(`  ${BLUE('🔵 OPTZ')}    `) + BORDER('║') + BG_TEAL(`  ${TEAL('🟢 UPGR')}    `) + BORDER('║'));
+  console.log(row(bugLabel + '       ' + featLabel + '    ' + imprLabel + ' ' + upgrLabel));
+  console.log(row(''));
 
-  // Counts (5 + 4 + 5 = 14 chars per cell)
-  const bugsStr = String(counts.bugs).padStart(4);
-  const featStr = String(counts.features).padStart(4);
-  const imprStr = String(counts.improvements).padStart(4);
-  const upgrStr = String(counts.upgrades).padStart(4);
+  const bugCount = ERROR(String(counts.bugs).padStart(6));
+  const featCount = MODE_CONSULTANT(String(counts.features).padStart(6));
+  const imprCount = INFO(String(counts.improvements).padStart(6));
+  const upgrCount = SUCCESS(String(counts.upgrades).padStart(6));
 
-  console.log(BORDER('  ║') + BG_RED(`     ${RED(bugsStr)}     `) + BORDER('║') + BG_PURPLE(`     ${PURPLE(featStr)}     `) + BORDER('║') + BG_BLUE(`     ${BLUE(imprStr)}     `) + BORDER('║') + BG_TEAL(`     ${TEAL(upgrStr)}     `) + BORDER('║'));
+  console.log(row(bugCount + '          ' + featCount + '          ' + imprCount + '          ' + upgrCount));
+  console.log(row(''));
 
-  // Empty row
-  console.log(BORDER('  ║') + BG_RED('              ') + BORDER('║') + BG_PURPLE('              ') + BORDER('║') + BG_BLUE('              ') + BORDER('║') + BG_TEAL('              ') + BORDER('║'));
+  // ─── PROGRESS BAR (Completion) ───
+  const barWidth = 50;
+  const filled = Math.round((completionPercent / 100) * barWidth);
+  const empty = barWidth - filled;
 
-  console.log(BORDER('  ╠══════════════╩══════════════╩══════════════╩══════════════╣'));
-  console.log(BORDER('  ║') + chalk.white(`        ${total} POINTS IDENTIFIED`) + BORDER('                        ║'));
-  console.log(BORDER('  ╚══════════════════════════════════════════════════════════╝'));
+  let barColor;
+  if (completionPercent >= 75) barColor = chalk.hex('#66BB6A');
+  else if (completionPercent >= 50) barColor = chalk.hex('#FFAB00');
+  else if (completionPercent >= 25) barColor = chalk.hex('#E66F24');
+  else barColor = chalk.hex('#EF5350');
+
+  const progressBar = barColor('█'.repeat(filled)) + chalk.hex('#333333')('░'.repeat(empty));
+  console.log(row(`  Progress: [${progressBar}] ${barColor(completionPercent + '%')}`));
+  console.log(row(MUTED(`  ${addressed} addressed · ${total} remaining`)));
+
+  console.log(row(''));
+  console.log(botRule());
+
+  // ─── COMMANDS ───
   console.log('');
-  console.log(GRAY('  View details (interactive):'));
-  console.log(GRAY('    bob analyse --results --bugs'));
-  console.log(GRAY('    bob analyse --results --features'));
-  console.log(GRAY('    bob analyse --results --improvements'));
-  console.log(GRAY('    bob analyse --results --upgrades'));
+  console.log(MUTED('  View details (interactive):'));
+  console.log(MUTED('    ▸ bob analyse --bugs'));
+  console.log(MUTED('    ▸ bob analyse --features'));
+  console.log(MUTED('    ▸ bob analyse --improvements'));
+  console.log(MUTED('    ▸ bob analyse --upgrades'));
   console.log('');
-  console.log(GRAY('  Auto-fix:'));
-  console.log(GRAY('    bob analyse --auto'));
-  console.log(GRAY('    bob analyse --auto --bugs --confidence 80'));
-  console.log(GRAY('    bob analyse --auto --priority high'));
+  console.log(MUTED('  Auto-fix:'));
+  console.log(MUTED('    ▸ bob analyse --auto'));
+  console.log(MUTED('    ▸ bob analyse --auto --bugs --confidence 80'));
+  console.log(MUTED('    ▸ bob analyse --auto --priority high'));
   console.log('');
 }
 
@@ -176,12 +236,12 @@ function renderDashboard(counts: { bugs: number; features: number; improvements:
 async function showStatus(config: any): Promise<void> {
   if (!config.loggedIn || !config.authToken || !config.conversationId) {
     console.log('');
-    console.log(chalk.yellow('  ⚠️  Status check requires Tier 3 with an active conversation.'));
+    console.log(WARNING('  ⚠️  Status check requires Tier 3 with an active conversation.'));
     console.log('');
     return;
   }
 
-  const spinner = ora({ text: chalk.cyan('  Checking analysis status...'), spinner: 'dots' }).start();
+  const spinner = ora({ text: INFO('  Checking analysis status...'), spinner: 'dots' }).start();
 
   try {
     const result = await callCloudFunction('getCLIAnalysisResults', {
@@ -193,7 +253,7 @@ async function showStatus(config: any): Promise<void> {
 
     if (result?.status) {
       console.log('');
-      console.log(AMBER(`  ◆ Analysis Status: ${result.status.toUpperCase()}`));
+      console.log(BRAND_SECONDARY(`  ◆ Analysis Status: ${result.status.toUpperCase()}`));
       if (result.progress) {
         const pct = Math.round((result.progress.completed / result.progress.total) * 100);
         const barLen = 30;
@@ -204,18 +264,18 @@ async function showStatus(config: any): Promise<void> {
         else if (pct < 75) barColor = chalk.yellow;
         else barColor = chalk.green;
 
-        const bar = barColor('█'.repeat(filled)) + GRAY('░'.repeat(barLen - filled));
+        const bar = barColor('█'.repeat(filled)) + MUTED('░'.repeat(barLen - filled));
         console.log(`  [${bar}] ${result.progress.completed}/${result.progress.total} (${pct}%)`);
       }
       console.log('');
     } else {
       console.log('');
-      console.log(GRAY('  No active analysis job found.'));
+      console.log(MUTED('  No active analysis job found.'));
       console.log('');
     }
   } catch (error: any) {
     spinner.stop();
-    console.log(chalk.red(`  ❌ ${error.message}`));
+    console.log(ERROR(`  ❌ ${error.message}`));
     console.log('');
   }
 }
@@ -229,51 +289,34 @@ async function runAnalysis(config: any): Promise<void> {
   const projectName = getProjectName(cwd);
 
   console.log('');
-  console.log(chalk.bold.cyan(`  ⚡ Analysing project: ${projectName}`));
-  console.log(GRAY(`  📁 ${cwd}`));
-  console.log(GRAY('  ─────────────────────────────────────'));
+  console.log(chalk.bold(INFO(`  ⚡ Analysing project: ${projectName}`)));
+  console.log(MUTED(`  📁 ${cwd}`));
+  console.log(MUTED('  ─────────────────────────────────────'));
   console.log('');
 
-  // ─── TIER 3: Call Cloud Function ───
-  if (config.tier === 'platform' && config.provider !== 'local' && config.loggedIn && config.conversationId) {
-    const spinner = ora({ text: chalk.cyan('  Triggering platform analysis...'), spinner: 'dots' }).start();
+  // ─── VERIFY PROVIDER IS AVAILABLE ───
+  const provider = config.provider || 'local';
 
-    try {
-      const result = await callCloudFunction('analyzeProjectWorkspace', {
-        conversationId: config.conversationId,
-      });
-
-      spinner.stop();
-
-      if (result?.success) {
-        console.log(chalk.green(`  ✅ Analysis job created: ${result.jobId}`));
-        console.log(GRAY('  Run `bob analyse --status` to check progress.'));
-        console.log(GRAY('  Run `bob analyse --results` when complete.'));
-      } else {
-        console.log(chalk.red(`  ❌ ${result?.message || 'Failed to start analysis.'}`));
-      }
-      console.log('');
-
-    } catch (error: any) {
-      spinner.stop();
-      console.log(chalk.red(`  ❌ ${error.message}`));
-      console.log('');
-    }
-    return;
-  }
-
-  // ─── TIER 1: Local Analysis ───
-  if (config.provider !== 'local' || !config.localEndpoint) {
-    console.log(chalk.red('  ❌ Local analysis requires a local model.'));
-    console.log(GRAY('  Run `bob config set provider local`'));
-    console.log(GRAY('  Run `bob config set localEndpoint http://127.0.0.1:11434/api/chat`'));
+  if (provider === 'local' && !config.localEndpoint) {
+    console.log(ERROR('  ❌ Local analysis requires a local model.'));
+    console.log(MUTED('  Run `bob config set provider local`'));
+    console.log(MUTED('  Run `bob config set localEndpoint http://127.0.0.1:11434/api/chat`'));
     console.log('');
     return;
   }
 
+  if (provider !== 'local' && (!config.loggedIn || !config.authToken)) {
+    console.log(ERROR('  ❌ Platform providers require authentication.'));
+    console.log(MUTED('  Run `bob login` to authenticate.'));
+    console.log(MUTED('  Or set provider to local: `bob config set provider local`'));
+    console.log('');
+    return;
+  }
+
+  // ─── VERIFY PROJECT IS INDEXED ───
   const summaries = loadSummaries(cwd);
   if (!summaries || Object.keys(summaries).length === 0) {
-    console.log(chalk.yellow('  ⚠️  Project not indexed. Run `bob index` first.'));
+    console.log(WARNING('  ⚠️  Project not indexed. Run `bob index` first.'));
     console.log('');
     return;
   }
@@ -281,7 +324,8 @@ async function runAnalysis(config: any): Promise<void> {
   const dependencies = loadDependencies(cwd) || {};
   const files = Object.keys(summaries);
 
-  console.log(GRAY(`  Found ${files.length} indexed files. Starting deep analysis...`));
+  console.log(INFO(`  🔧 Provider: ${provider}`));
+  console.log(MUTED(`  Found ${files.length} indexed files. Starting deep analysis...`));
   console.log('');
   console.log('');
   console.log('');
@@ -301,7 +345,7 @@ async function runAnalysis(config: any): Promise<void> {
     try {
       content = fs.readFileSync(absolutePath, 'utf-8');
     } catch (error: any) {
-      console.error(chalk.red(`  ❌ Could not read file ${filePath}: ${error.message}`));
+      console.error(ERROR(`  ❌ Could not read file ${filePath}: ${error.message}`));
       completed++;
       continue;
     }
@@ -318,53 +362,42 @@ async function runAnalysis(config: any): Promise<void> {
       depContext = `\nRELATED FILES:\n${fileDeps.map((d: string) => `- ${d}: ${summaries[d] || 'unknown'}`).join('\n')}\n`;
     }
 
-        const analysisPrompt = `You are the Lead QA Engineer on this project. Your job is to perform a thorough, production-grade code review.
+    const analysisPrompt = `You are the Lead QA Engineer on this project. Your job is to perform a thorough, production-grade code review.
 
-    For each issue you find, you MUST provide:
-    - A CLEAR, SPECIFIC title (not generic — name the exact problem)
-    - A DETAILED description explaining WHY this is a problem and WHAT the impact is
-    - A SPECIFIC implementation instruction — exact steps to fix it, referencing actual function/variable names from the code
-    - An honest priority based on real-world impact
+For each issue you find, you MUST provide:
+- A CLEAR, SPECIFIC title (not generic — name the exact problem)
+- A DETAILED description explaining WHY this is a problem and WHAT the impact is
+- A SPECIFIC implementation instruction — exact steps to fix it, referencing actual function/variable names from the code
+- An honest priority based on real-world impact
 
-    PRIORITY DEFINITIONS:
-    - critical: Will cause crashes, data loss, security vulnerabilities, or breaks core functionality
-    - high: Causes bugs in normal usage, performance degradation, or makes code unmaintainable
-    - medium: Code smell, minor inefficiency, or could cause issues under edge cases
-    - low: Style improvements, minor optimizations, or nice-to-haves
+PRIORITY DEFINITIONS:
+- critical: Will cause crashes, data loss, security vulnerabilities, or breaks core functionality
+- high: Causes bugs in normal usage, performance degradation, or makes code unmaintainable
+- medium: Code smell, minor inefficiency, or could cause issues under edge cases
+- low: Style improvements, minor optimizations, or nice-to-haves
 
-    CONFIDENCE RUBRIC (you will use this later during triage):
-    Your confidence should reflect: "How certain am I that implementing this fix will NOT break anything AND will ACTUALLY contribute positively to the project?"
-    - 95-100%: Fix is 1-5 lines, explicit, zero side effects, purely additive
-    - 85-94%: Clear fix, well-scoped, minimal risk, touches isolated logic
-    - 75-84%: Good fix but touches shared logic or has minor behavioral implications
-    - <75%: Requires judgment, structural changes, or has unpredictable side effects
+Respond with ONLY a JSON object:
+{
+  "bugs": [{"title": "...", "description": "...", "priority": "...", "implementation": "..."}],
+  "features": [{"title": "...", "description": "...", "priority": "...", "implementation": "..."}],
+  "improvements": [{"title": "...", "description": "...", "priority": "...", "implementation": "..."}],
+  "upgrades": [{"title": "...", "description": "...", "priority": "...", "implementation": "..."}]
+}
 
-    DO NOT include vague suggestions like "improve error handling" without specifying EXACTLY what to change.
-    DO NOT include items without clear implementation steps.
-    Every suggestion must be actionable by a junior engineer reading only your instructions.
-
-    Respond with ONLY a JSON object:
-    {
-      "bugs": [{"title": "Specific bug name", "description": "Detailed explanation of the problem and its impact", "priority": "critical|high|medium|low", "implementation": "Exact steps: 1. In function X, change Y to Z. 2. Add error check for..."}],
-      "features": [{"title": "...", "description": "...", "priority": "...", "implementation": "..."}],
-      "improvements": [{"title": "...", "description": "...", "priority": "...", "implementation": "..."}],
-      "upgrades": [{"title": "...", "description": "...", "priority": "...", "implementation": "..."}]
-    }
-
-    Be thorough but practical. Quality over quantity. Only list GENUINE issues with REAL impact.
-    ${depContext}
-    FILE: ${filePath}
-    ${content}`;
+Be thorough but practical. Quality over quantity. Only list GENUINE issues with REAL impact.
+${depContext}
+FILE: ${filePath}
+${content}`;
 
     try {
-            const messages: LocalChatMessage[] = [
-              { role: 'system', content: 'You are the Lead QA Engineer. Respond with ONLY valid JSON. Every suggestion must have a specific title, detailed description, and actionable implementation steps. No vague or generic items. Quality over quantity.' },
-              { role: 'user', content: analysisPrompt },
-            ];
+      const messages: LocalChatMessage[] = [
+        { role: 'system', content: 'You are the Lead QA Engineer. Respond with ONLY valid JSON. Every suggestion must have a specific title, detailed description, and actionable implementation steps. No vague or generic items. Quality over quantity.' },
+        { role: 'user', content: analysisPrompt },
+      ];
 
-      const response = await callLocalModel(config.localEndpoint!, messages);
+      const responseText = await callAnalysisProvider(config, messages);
 
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
 
@@ -380,8 +413,8 @@ async function runAnalysis(config: any): Promise<void> {
       } else {
         printProgress(completed + 1, files.length, filePath, '(no results)');
       }
-    } catch {
-      printProgress(completed + 1, files.length, filePath, '(error)');
+    } catch (err: any) {
+      printProgress(completed + 1, files.length, filePath, `(error: ${err.message?.slice(0, 40) || 'unknown'})`);
     }
 
     completed++;
@@ -408,10 +441,10 @@ async function runAnalysis(config: any): Promise<void> {
 
   console.log('');
   console.log('');
-  console.log(chalk.bold.green(`  ✅ Analysis complete: ${projectName}`));
-  console.log(GRAY(`  💾 Saved to: ~/.bob/projects/${projectName}/analysis/results/`));
-  console.log(GRAY('  Run `bob analyse --results` to view the dashboard.'));
-  console.log(GRAY('  Run `bob analyse --auto` for auto-fix mode.'));
+  console.log(chalk.bold(SUCCESS(`  ✅ Analysis complete: ${projectName}`)));
+  console.log(MUTED(`  💾 Saved to: ~/.bob/projects/${projectName}/analysis/results/`));
+  console.log(MUTED('  Run `bob analyse --results` to view the dashboard.'));
+  console.log(MUTED('  Run `bob analyse --auto` for auto-fix mode.'));
   console.log('');
 }
 
@@ -427,6 +460,35 @@ function loadLocalCounts(): any {
   return JSON.parse(fs.readFileSync(countsPath, 'utf-8'));
 }
 
+function loadAddressedCount(): number {
+  const cwd = process.cwd();
+  const projectName = path.basename(cwd);
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+  const analysisPath = path.join(homeDir, '.bob', 'projects', projectName, 'analysis', 'results', 'analysis.json');
+
+  if (!fs.existsSync(analysisPath)) return 0;
+
+  try {
+    const allResults = JSON.parse(fs.readFileSync(analysisPath, 'utf-8'));
+    let addressed = 0;
+
+    for (const fileResults of Object.values(allResults)) {
+      for (const category of ['bugs', 'features', 'improvements', 'upgrades']) {
+        const items = (fileResults as any)[category] || [];
+        for (const item of items) {
+          if (item.status === 'implemented' || item.status === 'dismissed') {
+            addressed++;
+          }
+        }
+      }
+    }
+
+    return addressed;
+  } catch {
+    return 0;
+  }
+}
+
 function printProgress(completed: number, total: number, filePath: string, info: string): void {
   const percent = completed / total;
   const barLength = 30;
@@ -439,13 +501,13 @@ function printProgress(completed: number, total: number, filePath: string, info:
   else barColor = chalk.green;
 
   const filledBar = barColor('█'.repeat(filled));
-  const emptyBar = GRAY('░'.repeat(barLength - filled));
+  const emptyBar = MUTED('░'.repeat(barLength - filled));
   const percentText = barColor(`${Math.round(percent * 100)}%`);
 
   process.stdout.write('\x1B[2K\x1B[1A\x1B[2K\x1B[1A\x1B[2K\x1B[1A\x1B[2K\r');
 
-  console.log(`  ${chalk.cyan('⚡')} Analysing [${filledBar}${emptyBar}] ${completed}/${total} ${percentText}`);
-  console.log(chalk.green(`  ✅ ${filePath}`));
-  console.log(GRAY(`     ${info}`));
+  console.log(`  ${INFO('⚡')} Analysing [${filledBar}${emptyBar}] ${completed}/${total} ${percentText}`);
+  console.log(SUCCESS(`  ✅ ${filePath}`));
+  console.log(MUTED(`     ${info}`));
   console.log('');
 }

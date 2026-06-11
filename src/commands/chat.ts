@@ -1,6 +1,5 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import ora from 'ora';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
@@ -9,14 +8,35 @@ import { callCloudFunction } from '../core/api-client.js';
 import { callLocalModel, LocalChatMessage } from '../ai/providers/local.js';
 import { buildPersonalizedPrompt } from '../ai/persona.js';
 import { buildLocalContext, readFileContent } from '../core/context-builder.js';
-import { renderMarkdown } from '../ui/renderer.js';
 import { saveMessage } from '../core/conversation-store.js';
 import { loadSummaries } from '../core/project-map.js';
 import { getRelevantFileContents } from '../core/file-retrieval.js';
-import { stripCodeBlockFromResponse, processAllProposedFiles } from '../core/file-writer.js';
+import { stripCodeBlockFromResponse, processAllProposedFiles, extractAllProposedFiles } from '../core/file-writer.js';
 import { enterDeepDive } from './deepdive.js';
 import { renderSessionHeader } from '../ui/session-header.js';
 import { showWelcomeIfFirstRun } from '../ui/welcome.js';
+import {
+  startElapsedTimer,
+  stopElapsedTimer,
+  renderUserMessage,
+  renderBobResponse,
+  renderFileDiff,
+  renderConstraintsTile,
+  ResponseMetadata,
+} from '../ui/chat-renderer.js';
+
+// ─── DESIGN TOKENS ───
+const BRAND_PRIMARY = chalk.hex('#E66F24');
+const BRAND_SECONDARY = chalk.hex('#FFAB00');
+const SUCCESS = chalk.hex('#66BB6A');
+const INFO = chalk.hex('#26C6DA');
+const WARNING = chalk.hex('#FFC107');
+const ERROR = chalk.hex('#EF5350');
+const MUTED = chalk.hex('#78909C');
+const MODE_CHAT = chalk.hex('#26C6DA');
+
+// ─── SESSION STATE ───
+let lastConstraints: string[] = [];
 
 export function registerChatCommand(program: Command): void {
   program
@@ -41,11 +61,10 @@ export function registerChatCommand(program: Command): void {
       if (options.file) {
         const fileContent = readFileContent(options.file);
         if (fileContent) { localContext += `\n\n--- INCLUDED FILE: ${options.file} ---\n${fileContent}\n--- END FILE ---`; }
-        else { console.log(chalk.yellow(`  ⚠️  Could not read file: ${options.file}`)); }
+        else { console.log(WARNING(`  ⚠️  Could not read file: ${options.file}`)); }
       }
 
       if (options.interactive || !message || options.personalized) {
-        // If personalized with a message, send it first then go interactive
         if (options.personalized && message) {
           await runInteractiveSession(config, conversationId, localContext, true, 'personalized', message);
         } else {
@@ -54,23 +73,27 @@ export function registerChatCommand(program: Command): void {
         return;
       }
 
-      await sendMessage(message, config, conversationId, localContext, options.personalized || false, 'standard', []);
+      await sendMessage(message, config, conversationId, localContext, options.personalized || false, 'standard', [], undefined);
     });
 }
 
-async function sendMessage(message: string, config: any, conversationId: string, localContext: string, personalized: boolean, mode: 'standard' | 'consultant' | 'personalized', history: LocalChatMessage[]): Promise<string> {
-  const spinner = ora({ text: chalk.cyan('  Bob is thinking...'), spinner: 'dots' }).start();
+async function sendMessage(message: string, config: any, conversationId: string, localContext: string, personalized: boolean, mode: 'standard' | 'consultant' | 'personalized', history: LocalChatMessage[], existingRl?: readline.Interface): Promise<string> {
+  // ─── RENDER USER MESSAGE (RIGHT-ALIGNED) ───
+  renderUserMessage(message);
+
+  // ─── START ELAPSED TIMER ───
+  startElapsedTimer();
 
   let selectedFiles: string[] = [];
   let hasProjectContext: boolean | null = null;
+  let constraints: string[] = [];
+  let tokenCount: number | undefined = undefined;
 
   try {
     let response: string;
 
     let relevantFiles = '';
     if (config.localEndpoint) {
-      spinner.text = chalk.cyan('  Bob is finding relevant files...');
-      // Use last assistant message for context when current message is short/vague
       const lastAssistantMsg = history.length > 0 ? history[history.length - 1]?.content?.slice(0, 500) || '' : '';
       const retrievalQuery = lastAssistantMsg
         ? `Previous context: ${lastAssistantMsg}\n\nCurrent request: ${message}`
@@ -80,13 +103,15 @@ async function sendMessage(message: string, config: any, conversationId: string,
       selectedFiles = retrieval.selectedFiles;
     }
 
-    spinner.text = chalk.cyan('  Bob is thinking...');
-
     let fullContext = localContext;
     if (relevantFiles) { fullContext += `\n\n${relevantFiles}`; }
 
     if (config.provider === 'local') {
-      if (!config.localEndpoint) { spinner.stop(); console.log(chalk.red('  ❌ No local endpoint configured.')); return ''; }
+      if (!config.localEndpoint) {
+        stopElapsedTimer();
+        console.log(ERROR('  ❌ No local endpoint configured.'));
+        return '';
+      }
 
       const systemPrompt = buildPersonalizedPrompt('standard');
       const messages: LocalChatMessage[] = [
@@ -95,12 +120,25 @@ async function sendMessage(message: string, config: any, conversationId: string,
         { role: 'user', content: message },
       ];
 
-      response = await callLocalModel(config.localEndpoint, messages);
+      const localResult = await callLocalModel(config.localEndpoint, messages);
+
+      // Handle extended response from local model (if available)
+      if (typeof localResult === 'object' && localResult.text) {
+        response = localResult.text;
+        tokenCount = localResult.evalCount || undefined;
+      } else {
+        response = localResult as unknown as string;
+      }
+
       saveMessage(conversationId, { sender: 'user', message, timestamp: new Date().toISOString(), type: 'text' }, { tier: 'local', provider: config.provider, mode });
       saveMessage(conversationId, { sender: 'bob', message: response, timestamp: new Date().toISOString(), type: 'text' }, { tier: 'local', provider: config.provider, mode });
 
     } else if (personalized || config.personalizationMode) {
-      if (!config.loggedIn || !config.authToken) { spinner.stop(); console.log(chalk.red('  ❌ Personalization mode requires Tier 3.')); return ''; }
+      if (!config.loggedIn || !config.authToken) {
+        stopElapsedTimer();
+        console.log(ERROR('  ❌ Personalization mode requires Tier 3.'));
+        return '';
+      }
       await callCloudFunction('saveCLIConversationMessage', { conversationId, message, sender: 'user' });
       const result = await callCloudFunction('getPersonalizedResponse', {
         email: config.email,
@@ -113,43 +151,61 @@ async function sendMessage(message: string, config: any, conversationId: string,
       });
       response = result?.response || result?.data?.response || result?.text || result?.message || 'No response received.';
       hasProjectContext = result?.hasProjectContext ?? null;
+      constraints = result?.constraints || result?.data?.constraints || [];
+      tokenCount = result?.usageMetadata?.candidatesTokenCount || result?.data?.usageMetadata?.candidatesTokenCount || undefined;
 
     } else {
-      if (!config.loggedIn || !config.authToken) { spinner.stop(); console.log(chalk.red('  ❌ Not logged in.')); console.log(chalk.gray('  Run `bob login` to authenticate, or set provider to local.')); return ''; }
+      if (!config.loggedIn || !config.authToken) {
+        stopElapsedTimer();
+        console.log(ERROR('  ❌ Not logged in.'));
+        console.log(MUTED('  Run `bob login` to authenticate, or set provider to local.'));
+        return '';
+      }
       const result = await callCloudFunction('chatWithBobStream', { userEmail: config.email, userId: config.uid, conversationId, userMessage: message, useContext: true, consultantModelId: 'gemini-2.5-flash', useOrgContext: false, isPassalongActive: false, linkedConvoId: null, localContext: fullContext || null });
       response = result?.text || result?.response || result?.message || 'No response received.';
       hasProjectContext = result?.hasProjectContext ?? null;
+      constraints = result?.constraints || [];
+      tokenCount = result?.responseTokens || undefined;
     }
 
-    spinner.stop();
+    // ─── STOP TIMER ───
+    const elapsedMs = stopElapsedTimer();
 
+    // ─── STORE CONSTRAINTS FOR /constraints COMMAND ───
+    lastConstraints = constraints;
+
+    // ─── RENDER BOB'S RESPONSE FIRST ───
     const displayResponse = stripCodeBlockFromResponse(response);
-    const rendered = renderMarkdown(displayResponse);
+    const metadata: ResponseMetadata = {
+      elapsedMs,
+      tokenCount,
+      selectedFiles,
+      constraints,
+      mode: mode === 'standard' ? 'chat' : mode === 'consultant' ? 'consultant' : 'chat',
+      tier: config.provider === 'local' ? 'local' : 'platform',
+      conversationId,
+    };
 
-    console.log('');
-    console.log(chalk.gray('  ─────────────────────────────────────'));
-    console.log(chalk.bold.cyan('  🤖 Bob:'));
-    console.log('');
-    for (const line of rendered.split('\n')) { console.log(`  ${line}`); }
-    console.log('');
-    if (selectedFiles.length > 0) { console.log(chalk.gray(`  📂 Referenced: ${selectedFiles.join(', ')}`)); }
+    await renderBobResponse(displayResponse, metadata);
 
-    if (config.tier === 'platform' && config.provider !== 'local') {
-      console.log(chalk.gray(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`));
-      if (hasProjectContext === false) {
-        console.log(chalk.red('  ⚠️  No project workspace connected. Upload a project via the web app'));
-        console.log(chalk.red('     for full RAG + workspace capabilities.'));
+    // ─── RENDER DIFF AFTER BOB'S RESPONSE ───
+    const proposals = extractAllProposedFiles(response);
+    for (const proposed of proposals) {
+      if (proposed.isLocal) {
+        renderFileDiff(proposed.filePath, proposed.content, proposed.isNew);
       }
     }
 
-    console.log(chalk.gray('  ─────────────────────────────────────'));
-    console.log('');
-
-    await processAllProposedFiles(response);
+    // ─── PROCESS FILE PROPOSALS (APPROVAL PROMPTS) ───
+    await processAllProposedFiles(response, false, existingRl);
 
     return response;
 
-  } catch (error: any) { spinner.stop(); console.log(chalk.red(`  ❌ ${error.message || 'Unknown error'}`)); return ''; }
+  } catch (error: any) {
+    stopElapsedTimer();
+    console.log(ERROR(`  ❌ ${error.message || 'Unknown error'}`));
+    return '';
+  }
 }
 
 async function runInteractiveSession(config: any, conversationId: string, localContext: string, personalized: boolean, mode: 'standard' | 'consultant' | 'personalized', initialMessage?: string): Promise<void> {
@@ -159,61 +215,108 @@ async function runInteractiveSession(config: any, conversationId: string, localC
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const history: LocalChatMessage[] = [];
+
   if (initialMessage) {
-    const response = await sendMessage(initialMessage, config, conversationId, localContext, personalized, mode, history);
+    const response = await sendMessage(initialMessage, config, conversationId, localContext, personalized, mode, history, rl);
     if (response) {
       history.push({ role: 'user', content: initialMessage });
       history.push({ role: 'assistant', content: response });
     }
   }
+
   const prompt = (): void => {
-    rl.question(chalk.green('  You: '), async (input) => {
+    rl.question(SUCCESS('  You: '), async (input) => {
       const trimmed = input.trim();
       if (!trimmed) { prompt(); return; }
 
+      // ─── SLASH COMMANDS ───
       if (trimmed === '/exit' || trimmed === '/quit') {
         console.log('');
-        console.log(chalk.gray(`  💾 Session: ${conversationId.slice(0, 24)}...`));
-        if (config.tier === 'platform' && config.provider !== 'local') { console.log(chalk.gray(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`)); }
-        console.log(chalk.gray('  👋 See you next time.'));
+        console.log(MUTED(`  💾 Session: ${conversationId.slice(0, 24)}...`));
+        if (config.tier === 'platform' && config.provider !== 'local') {
+          console.log(MUTED(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`));
+        }
+        console.log(MUTED('  👋 See you next time.'));
         console.log('');
         rl.close(); return;
       }
 
-      if (trimmed === '/new') { history.length = 0; conversationId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; setConfigValue('conversationId', conversationId); console.log(chalk.cyan('  🔄 New session started.')); console.log(''); prompt(); return; }
+      if (trimmed === '/new') {
+        history.length = 0;
+        lastConstraints = [];
+        conversationId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        setConfigValue('conversationId', conversationId);
+        console.log(INFO('  🔄 New session started.'));
+        console.log('');
+        prompt(); return;
+      }
+
       if (trimmed === '/clear') { console.clear(); renderSessionHeader('chat'); prompt(); return; }
+
+      if (trimmed === '/constraints') {
+        renderConstraintsTile(lastConstraints);
+        prompt(); return;
+      }
 
       if (trimmed.startsWith('/include ')) {
         const filePath = trimmed.slice(9).trim();
         const content = readFileContent(filePath);
-        if (content) { localContext += `\n\n--- INCLUDED FILE: ${filePath} ---\n${content}\n--- END FILE ---`; console.log(chalk.green(`  📄 Loaded: ${filePath} (${content.split('\n').length} lines)`)); }
-        else { console.log(chalk.red(`  ❌ Could not read: ${filePath}`)); }
-        console.log(''); prompt(); return;
+        if (content) {
+          localContext += `\n\n--- INCLUDED FILE: ${filePath} ---\n${content}\n--- END FILE ---`;
+          console.log(SUCCESS(`  📄 Loaded: ${filePath} (${content.split('\n').length} lines)`));
+        } else {
+          console.log(ERROR(`  ❌ Could not read: ${filePath}`));
+        }
+        console.log('');
+        prompt(); return;
       }
 
       if (trimmed.startsWith('/delete ')) {
         const filePath = trimmed.slice(8).trim();
         const absolutePath = path.resolve(process.cwd(), filePath);
-        if (!fs.existsSync(absolutePath)) { console.log(chalk.red(`  ❌ File not found: ${filePath}`)); console.log(''); prompt(); return; }
-        const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
-        const confirm = await new Promise<string>(resolve => { rl2.question(chalk.red(`  🗑️  Delete ${filePath}? (y/n): `), resolve); });
-        rl2.close();
+        if (!fs.existsSync(absolutePath)) { console.log(ERROR(`  ❌ File not found: ${filePath}`)); console.log(''); prompt(); return; }
+
+        // ─── FIX: Pause main rl, use raw stdin for delete confirmation ───
+        rl.pause();
+        const confirmPromptText = ERROR(`  🗑️  Delete ${filePath}? (y/n): `);
+        const confirm = await new Promise<string>(resolve => {
+          process.stdout.write(confirmPromptText);
+          process.stdin.resume();
+          process.stdin.setEncoding('utf-8');
+          let inputBuffer = '';
+          const onData = (chunk: string) => {
+            const newlineIdx = chunk.indexOf('\n');
+            if (newlineIdx !== -1) {
+              inputBuffer += chunk.slice(0, newlineIdx);
+              process.stdin.removeListener('data', onData);
+              process.stdin.pause();
+              resolve(inputBuffer.replace(/\r/g, '').trim());
+            } else {
+              inputBuffer += chunk;
+            }
+          };
+          process.stdin.on('data', onData);
+        });
+        rl.resume();
+
         if (confirm.toLowerCase() === 'y' || confirm.toLowerCase() === 'yes') {
           try {
             const backupDir = path.join(process.cwd(), '.bob-backups');
             if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
             fs.copyFileSync(absolutePath, path.join(backupDir, filePath.replace(/[\/\\]/g, '_') + `.${Date.now()}.deleted`));
             fs.unlinkSync(absolutePath);
-            console.log(chalk.green(`  ✅ Deleted: ${filePath}`));
-            console.log(chalk.gray(`  📦 Backup saved to .bob-backups/`));
-          } catch (e: any) { console.log(chalk.red(`  ❌ Delete failed: ${e.message}`)); }
-        } else { console.log(chalk.gray('  Cancelled.')); }
-        console.log(''); prompt(); return;
+            console.log(SUCCESS(`  ✅ Deleted: ${filePath}`));
+            console.log(MUTED(`  📦 Backup saved to .bob-backups/`));
+          } catch (e: any) { console.log(ERROR(`  ❌ Delete failed: ${e.message}`)); }
+        } else { console.log(MUTED('  Cancelled.')); }
+        console.log('');
+        prompt(); return;
       }
 
       if (trimmed === '/deepdive') { await enterDeepDive(config, conversationId, rl); prompt(); return; }
 
-      const response = await sendMessage(trimmed, config, conversationId, localContext, personalized, mode, history);
+      // ─── SEND MESSAGE ───
+      const response = await sendMessage(trimmed, config, conversationId, localContext, personalized, mode, history, rl);
       if (response) { history.push({ role: 'user', content: trimmed }); history.push({ role: 'assistant', content: response }); }
       prompt();
     });
