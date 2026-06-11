@@ -11,7 +11,7 @@
 
 **Bob's CLI** is a locally-installed developer tool that provides a senior-level AI engineering partner directly inside your native terminal. Stay in your development environment. Never switch to a browser. Ship faster.
 
-![Bob's CLI](assets/BobsWelcome.gif)
+![Bob's CLI](assets/BobWelcome.gif)
 
 [Installation](#installation) · [Quick Start](#quick-start) · [Features](#features) · [Docs](https://seedling-io.gitbook.io/bob-cli/)
 
