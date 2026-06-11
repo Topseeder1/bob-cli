@@ -3,6 +3,13 @@ import chalk from 'chalk';
 import ora from 'ora';
 import simpleGit from 'simple-git';
 
+// ─── DESIGN TOKENS ───
+const SUCCESS = chalk.hex('#66BB6A');
+const INFO = chalk.hex('#26C6DA');
+const WARNING = chalk.hex('#FFC107');
+const ERROR = chalk.hex('#EF5350');
+const MUTED = chalk.hex('#78909C');
+
 export function registerPushCommand(program: Command): void {
   program
     .command('push <message>')
@@ -16,14 +23,14 @@ export function registerPushCommand(program: Command): void {
       const isRepo = await git.checkIsRepo();
       if (!isRepo) {
         console.log('');
-        console.log(chalk.red('  ❌ Not a git repository.'));
-        console.log(chalk.gray('  Run this command from inside a git project.'));
+        console.log(ERROR('  ❌ Not a git repository.'));
+        console.log(MUTED('  Run this command from inside a git project.'));
         console.log('');
         return;
       }
 
       const spinner = ora({
-        text: chalk.cyan('  Preparing commit...'),
+        text: INFO('  Preparing commit...'),
         spinner: 'dots',
       }).start();
 
@@ -34,24 +41,24 @@ export function registerPushCommand(program: Command): void {
         if (status.files.length === 0) {
           spinner.stop();
           console.log('');
-          console.log(chalk.yellow('  ⚠️  Nothing to commit. Working tree is clean.'));
+          console.log(WARNING('  ⚠️  Nothing to commit. Working tree is clean.'));
           console.log('');
           return;
         }
 
         // ─── STAGE ───
         if (options.stage !== false) {
-          spinner.text = chalk.cyan(`  Staging ${status.files.length} file(s)...`);
+          spinner.text = INFO(`  Staging ${status.files.length} file(s)...`);
           await git.add('.');
         }
 
         // ─── COMMIT ───
-        spinner.text = chalk.cyan('  Committing...');
+        spinner.text = INFO('  Committing...');
         const commitResult = await git.commit(message);
         const commitHash = commitResult.commit ? commitResult.commit.slice(0, 7) : 'unknown';
 
         // ─── PUSH ───
-        spinner.text = chalk.cyan('  Pushing to remote...');
+        spinner.text = INFO('  Pushing to remote...');
         const currentBranch = options.branch || (await git.branchLocal()).current;
 
         try {
@@ -69,39 +76,39 @@ export function registerPushCommand(program: Command): void {
 
         // ─── SUCCESS OUTPUT ───
         console.log('');
-        console.log(chalk.green('  ✅ Pushed successfully'));
-        console.log(chalk.gray('  ─────────────────────────────────────'));
-        console.log(`  ${chalk.cyan('Commit:')}   ${commitHash}`);
-        console.log(`  ${chalk.cyan('Branch:')}   ${currentBranch}`);
-        console.log(`  ${chalk.cyan('Message:')}  ${message}`);
-        console.log(`  ${chalk.cyan('Files:')}    ${status.files.length} changed`);
-        console.log(chalk.gray('  ─────────────────────────────────────'));
+        console.log(SUCCESS('  ✅ Pushed successfully'));
+        console.log(MUTED('  ─────────────────────────────────────'));
+        console.log(`  ${INFO('Commit:')}   ${commitHash}`);
+        console.log(`  ${INFO('Branch:')}   ${currentBranch}`);
+        console.log(`  ${INFO('Message:')}  ${message}`);
+        console.log(`  ${INFO('Files:')}    ${status.files.length} changed`);
+        console.log(MUTED('  ─────────────────────────────────────'));
         console.log('');
 
         // Show changed files
         if (status.files.length <= 10) {
           for (const file of status.files) {
             const icon = file.index === '?' ? '➕' : file.index === 'D' ? '🗑️' : '✏️';
-            console.log(chalk.gray(`  ${icon} ${file.path}`));
+            console.log(MUTED(`  ${icon} ${file.path}`));
           }
           console.log('');
         } else {
-          console.log(chalk.gray(`  ${status.created.length} added, ${status.modified.length} modified, ${status.deleted.length} deleted`));
+          console.log(MUTED(`  ${status.created.length} added, ${status.modified.length} modified, ${status.deleted.length} deleted`));
           console.log('');
         }
 
       } catch (error: any) {
         spinner.stop();
         console.log('');
-        console.log(chalk.red(`  ❌ Push failed: ${error.message}`));
+        console.log(ERROR(`  ❌ Push failed: ${error.message}`));
 
         if (error.message?.includes('Authentication failed') || error.message?.includes('could not read Username')) {
-          console.log(chalk.gray('  Make sure your git credentials are configured.'));
-          console.log(chalk.gray('  Run: git config --global credential.helper store'));
+          console.log(MUTED('  Make sure your git credentials are configured.'));
+          console.log(MUTED('  Run: git config --global credential.helper store'));
         }
 
         if (error.message?.includes('conflict') || error.message?.includes('rejected')) {
-          console.log(chalk.gray('  There may be remote changes. Try: git pull --rebase'));
+          console.log(MUTED('  There may be remote changes. Try: git pull --rebase'));
         }
 
         console.log('');

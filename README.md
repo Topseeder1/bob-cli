@@ -5,7 +5,13 @@
 
 ### Your AI Engineering Partner — In Your Terminal
 
+[![npm version](https://img.shields.io/npm/v/@bobsworkshop/cli)](https://www.npmjs.com/package/@bobsworkshop/cli)
+[![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 **Bob's CLI** is a locally-installed developer tool that provides a senior-level AI engineering partner directly inside your native terminal. Stay in your development environment. Never switch to a browser. Ship faster.
+
+![Bob's CLI](https://raw.githubusercontent.com/Topseeder1/bob-cli/main/assets/BobsWelcome.gif)
 
 [Installation](#installation) · [Quick Start](#quick-start) · [Features](#features) · [Docs](https://seedling-io.gitbook.io/bob-cli/)
 
@@ -23,38 +29,44 @@ Every other AI coding assistant lives in a browser, disconnected from your actua
 
 | Feature | Bob's CLI | Claude Code | Copilot | Cursor |
 |---------|-----------|-------------|---------|--------|
-| Local file awareness | ✅ | ✅           | ✅ | ✅ |
-| Zero-cost local model | ✅ | ✅           | ❌ | ❌ |
-| Behavioral profiling | ✅ | ❌           | ❌ | ❌ |
-| Personalization Mode | ✅ | ❌           | ❌ | ❌ |
-| Conversation persistence | ✅ | ✅           | ❌ | Partial |
-| Deep Dives & Forks | ✅ | ❌           | ❌ | ❌ |
-| Remote execution (SovereignLink) | ✅ | Partial     | ❌ | ❌ |
-| Cross-surface sync (CLI ↔ Web) | ✅ | ✅           | ❌ | ❌ |
-| Autonomous code repair | ✅ | ✅           | ❌ | ✅ |
-| Source code stays on-device | ✅ | ✅           | ❌ | ✅ |
+| Local file awareness | ✅ | ✅ | ✅ | ✅ |
+| Zero-cost local model | ✅ | ✅ | ❌ | ❌ |
+| Behavioral profiling | ✅ | ❌ | ❌ | ❌ |
+| Personalization Mode | ✅ | ❌ | ❌ | ❌ |
+| Conversation persistence | ✅ | ✅ | ❌ | Partial |
+| Deep Dives & Forks | ✅ | ❌ | ❌ | ❌ |
+| Remote execution (SovereignLink) | ✅ | Partial | ❌ | ❌ |
+| Cross-surface sync (CLI ↔ Web) | ✅ | ✅ | ❌ | ❌ |
+| Autonomous code repair | ✅ | ✅ | ❌ | ✅ |
+| Source code stays on-device | ✅ | ✅ | ❌ | ✅ |
 
 ---
 
 ## Installation
 
-    pnpm add -g @bobsworkshop/cli
+```bash
+pnpm add -g @bobsworkshop/cli
+```
 
 Or with npm:
 
-    npm install -g @bobsworkshop/cli
+```bash
+npm install -g @bobsworkshop/cli
+```
 
 Verify:
 
-    bob whoami
+```bash
+bob whoami
+```
 
 **Requirements:**
 - Node.js 18+
 - Any terminal (VS Code, Android Studio, Windows Terminal, iTerm, PowerShell)
-- For local AI: Ollama with a downloaded model
-- For platform features: A Bob's Workshop account
+- For local AI: [Ollama](https://ollama.com) with a downloaded model
+- For platform features: A [Bob's Workshop](https://bobs-workshop.web.app) account
 
-> Full setup guide: https://seedling-io.gitbook.io/bob-cli/
+> 📖 Full setup guide: https://seedling-io.gitbook.io/bob-cli/
 
 ---
 
@@ -62,18 +74,28 @@ Verify:
 
 ### Local-First (Free)
 
-    bob config set provider local
-    bob config set localEndpoint http://127.0.0.1:11434/api/chat
-    bob chat "hello, what can you help me with?"
+```bash
+bob chat "hello, what can you help me with?"
+```
 
-No internet. No API keys. No cost. Your code never leaves your machine.
+Bob auto-detects Ollama running on your machine. No configuration needed. No internet. No API keys. No cost. Your code never leaves your machine.
 
 ### Platform (Subscribers)
 
-    bob login
-    bob chat "help me refactor this service"
+```bash
+bob login
+bob chat "help me refactor this service"
+```
 
 Sync to web. Access Claude, Gemini, deep dives, forks, and personalization.
+
+---
+
+## First Run Experience
+
+When you first install Bob's CLI, you're greeted with a branded welcome screen:
+
+![Welcome Screen](https://raw.githubusercontent.com/Topseeder1/bob-cli/main/assets/WelcomeScreen.gif)
 
 ---
 
@@ -95,6 +117,47 @@ Sync to web. Access Claude, Gemini, deep dives, forks, and personalization.
 
 ---
 
+## Code Analysis
+
+Bob performs production-grade QA reviews across your entire codebase — identifying bugs, features, improvements, and upgrades with actionable implementation instructions:
+
+![Analysis Dashboard](https://raw.githubusercontent.com/Topseeder1/bob-cli/main/assets/AnalysisDashboard.png)
+
+```bash
+bob analyse              # Run full code review
+bob analyse --results    # View dashboard
+bob analyse --auto       # Auto-fix with safety constraints
+```
+
+---
+
+## Commands
+
+![Help Output](https://raw.githubusercontent.com/Topseeder1/bob-cli/main/assets/BobCliHelpOutput.gif)
+
+```
+bob chat "question"                # AI coding partner
+bob consult "question"             # Strategic advice
+bob index                          # Index codebase
+bob analyse                        # Code review
+bob analyse --auto                 # Auto-fix
+bob autonomy                       # Full autonomous repair
+bob profile --cloud                # Generate DNA profile
+bob profile                        # View dashboard
+bob deepdive                       # Sandboxed exploration
+bob fork "topic"                   # Branch conversation
+bob serve                          # Start SovereignLink
+bob remote chat "msg"              # Remote execution
+bob push "message"                 # Git push
+bob login                          # Authenticate
+bob byok set google <key>          # Add BYOK key
+bob whoami                         # Status
+```
+
+> 📖 Full command reference: https://seedling-io.gitbook.io/bob-cli/bobs-cli-product-wiki-and-user-guide/command-reference
+
+---
+
 ## Personalization Mode
 
 Powered by the **Frank Reasoning Engine**. Bob learns how you work and adapts:
@@ -103,39 +166,23 @@ Powered by the **Frank Reasoning Engine**. Bob learns how you work and adapts:
 - Blind spots proactively addressed
 - Emotional state calibrated encouragement
 
-  bob profile --cloud
-  bob chat --personalized "what should I focus on?"
-
----
-
-## Commands
-
-    bob chat "question"                # AI coding partner
-    bob consult "question"             # Strategic advice
-    bob index                          # Index codebase
-    bob analyse                        # Code review
-    bob analyse --auto                 # Auto-fix
-    bob autonomy                       # Full autonomous repair
-    bob profile --cloud                # Generate DNA profile
-    bob profile                        # View dashboard
-    bob deepdive                       # Sandboxed exploration
-    bob fork "topic"                   # Branch conversation
-    bob serve                          # Start SovereignLink
-    bob remote chat "msg"              # Remote execution
-    bob push "message"                 # Git push
-    bob login                          # Authenticate
-    bob byok set google <key>          # Add BYOK key
-    bob whoami                         # Status
+```bash
+bob profile --cloud
+bob chat --personalized "what should I focus on?"
+```
 
 ---
 
 ## Architecture
 
-    Tier 1 — Local (Free)          Tier 3 — Platform (Subscription)
-    - Your model (Ollama)           - Claude / Gemini
-    - Files on your machine         - Conversations sync to web
-    - Local profiling               - Cloud profiling + Frank Engine
-    - Zero cost                     - Deep dives, forks, remote exec
+```
+Tier 1 — Local (Free)              Tier 3 — Platform (Subscription)
+─────────────────────────           ─────────────────────────────────
+▸ Your model (Ollama)               ▸ Claude / Gemini
+▸ Files on your machine             ▸ Conversations sync to web
+▸ Local profiling                   ▸ Cloud profiling + Frank Engine
+▸ Zero cost                         ▸ Deep dives, forks, remote exec
+```
 
 Same commands. Scale without changing tools.
 
@@ -143,9 +190,9 @@ Same commands. Scale without changing tools.
 
 ## Documentation
 
-- Full Docs: https://seedling-io.gitbook.io/bob-cli/
-- Web App: https://bobs-workshop.web.app
-- npm: https://www.npmjs.com/package/@bobsworkshop/cli
+- 📖 Full Docs: https://seedling-io.gitbook.io/bob-cli/
+- 🌐 Web App: https://bobs-workshop.web.app
+- 📦 npm: https://www.npmjs.com/package/@bobsworkshop/cli
 
 ---
 
@@ -158,3 +205,4 @@ Bob's CLI · Bob's Workshop · Seedling
 *Written by Bob.*
 
 </div>
+

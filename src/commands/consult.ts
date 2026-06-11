@@ -12,6 +12,7 @@ import { getRelevantFileContents } from '../core/file-retrieval.js';
 import { renderSessionHeader } from '../ui/session-header.js';
 import { showWelcomeIfFirstRun } from '../ui/welcome.js';
 import { enterDeepDive } from './deepdive.js';
+import { ensureProvider } from '../core/provider-detect.js';
 import {
   startElapsedTimer,
   stopElapsedTimer,
@@ -65,6 +66,10 @@ export function registerConsultCommand(program: Command): void {
 
 async function sendConsultMessage(message: string, config: any, conversationId: string, localContext: string, history: LocalChatMessage[], existingRl?: readline.Interface): Promise<string> {
   // ─── RENDER USER MESSAGE (RIGHT-ALIGNED) ───
+const providerReady = await ensureProvider();
+if (!providerReady) return '';
+config = getConfig(); // Re-read after potential auto-configure
+
   renderUserMessage(message);
 
   // ─── START ELAPSED TIMER ───

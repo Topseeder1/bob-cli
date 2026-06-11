@@ -4,6 +4,16 @@ import { getConfig, setConfigValue } from '../core/config-store.js';
 import { callCloudFunction } from '../core/api-client.js';
 import { startForkAnimation } from '../ui/animations/fork-split.js';
 
+// ─── DESIGN TOKENS ───
+const BRAND_PRIMARY = chalk.hex('#E66F24');
+const BRAND_SECONDARY = chalk.hex('#FFAB00');
+const SUCCESS = chalk.hex('#66BB6A');
+const INFO = chalk.hex('#26C6DA');
+const WARNING = chalk.hex('#FFC107');
+const ERROR = chalk.hex('#EF5350');
+const MUTED = chalk.hex('#78909C');
+const MODE_CONSULTANT = chalk.hex('#AB47BC');
+
 export function registerForkCommand(program: Command): void {
   program
     .command('fork <title>')
@@ -13,16 +23,16 @@ export function registerForkCommand(program: Command): void {
 
       if (!config.loggedIn || !config.authToken) {
         console.log('');
-        console.log(chalk.red('  ❌ Not logged in. Forks require Tier 3 (platform).'));
-        console.log(chalk.gray('  Run `bob login` to authenticate.'));
+        console.log(ERROR('  ❌ Not logged in. Forks require Tier 3 (platform).'));
+        console.log(MUTED('  Run `bob login` to authenticate.'));
         console.log('');
         return;
       }
 
       if (!config.conversationId) {
         console.log('');
-        console.log(chalk.red('  ❌ No active conversation to fork from.'));
-        console.log(chalk.gray('  Start a conversation first with `bob chat`, or join one with `bob conversations join`.'));
+        console.log(ERROR('  ❌ No active conversation to fork from.'));
+        console.log(MUTED('  Start a conversation first with `bob chat`, or join one with `bob conversations join`.'));
         console.log('');
         return;
       }
@@ -30,11 +40,10 @@ export function registerForkCommand(program: Command): void {
       const parentConvoId = config.conversationId;
 
       console.log('');
-      console.log(chalk.bold.magenta(`  ⚡ Forking: "${title}"`));
-      console.log(chalk.gray(`  From: ${parentConvoId.slice(0, 24)}...`));
+      console.log(chalk.bold(MODE_CONSULTANT(`  ⚡ Forking: "${title}"`)));
+      console.log(MUTED(`  From: ${parentConvoId.slice(0, 24)}...`));
       console.log('');
 
-      // Start animation + backend call simultaneously
       const forkPromise = callCloudFunction('createConversationFork', {
         parentConversationId: parentConvoId,
         forkTitle: title,
@@ -47,53 +56,47 @@ export function registerForkCommand(program: Command): void {
       try {
         const result = await forkPromise;
         animation.stop();
-
-        // Small delay to let final frame render
         await new Promise(resolve => setTimeout(resolve, 200));
 
         if (result?.conversationId) {
           setConfigValue('conversationId', result.conversationId);
 
           console.log('');
-          console.log(chalk.green(`  ✅ Fork created: "${title}"`));
-          console.log(chalk.gray(`  Session: ${result.conversationId.slice(0, 24)}...`));
-          console.log(chalk.gray('  Your next `bob chat` message continues in this fork.'));
-          console.log(chalk.gray(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${result.conversationId}`));
+          console.log(SUCCESS(`  ✅ Fork created: "${title}"`));
+          console.log(MUTED(`  Session: ${result.conversationId.slice(0, 24)}...`));
+          console.log(MUTED('  Your next `bob chat` message continues in this fork.'));
+          console.log(MUTED(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${result.conversationId}`));
           console.log('');
 
-          // Show Bob's kickstart message
           if (result.kickstartMessage) {
-            console.log(chalk.gray('  ─────────────────────────────────────'));
-            console.log(chalk.bold.cyan('  🤖 Bob:'));
+            console.log(MUTED('  ─────────────────────────────────────'));
+            console.log(chalk.bold(INFO('  🤖 Bob:')));
             console.log('');
             for (const line of result.kickstartMessage.split('\n')) {
               console.log(`  ${line}`);
             }
             console.log('');
-            console.log(chalk.gray('  ─────────────────────────────────────'));
+            console.log(MUTED('  ─────────────────────────────────────'));
             console.log('');
           }
 
-          // Show summary details
           if (result.keyPoints && result.keyPoints.length > 0) {
-            console.log(chalk.gray('  📋 Context carried forward:'));
+            console.log(MUTED('  📋 Context carried forward:'));
             for (const point of result.keyPoints.slice(0, 4)) {
-              console.log(chalk.gray(`    • ${point}`));
+              console.log(MUTED(`    • ${point}`));
             }
             console.log('');
           }
-
         } else {
           console.log('');
-          console.log(chalk.red('  ❌ Fork failed — no conversation ID returned.'));
+          console.log(ERROR('  ❌ Fork failed — no conversation ID returned.'));
           console.log('');
         }
-
       } catch (error: any) {
         animation.stop();
         await new Promise(resolve => setTimeout(resolve, 200));
         console.log('');
-        console.log(chalk.red(`  ❌ Fork failed: ${error.message}`));
+        console.log(ERROR(`  ❌ Fork failed: ${error.message}`));
         console.log('');
       }
     });
@@ -106,20 +109,20 @@ export function registerForkCommand(program: Command): void {
 
       if (!config.loggedIn || !config.authToken) {
         console.log('');
-        console.log(chalk.red('  ❌ Not logged in.'));
+        console.log(ERROR('  ❌ Not logged in.'));
         console.log('');
         return;
       }
 
       if (!config.conversationId) {
         console.log('');
-        console.log(chalk.red('  ❌ No active conversation.'));
+        console.log(ERROR('  ❌ No active conversation.'));
         console.log('');
         return;
       }
 
       console.log('');
-      console.log(chalk.bold.magenta('  🔀 Loading forks...'));
+      console.log(chalk.bold(MODE_CONSULTANT('  🔀 Loading forks...')));
 
       try {
         const result = await callCloudFunction('listConversationForks', {
@@ -129,28 +132,27 @@ export function registerForkCommand(program: Command): void {
         const forks = result.forks || [];
 
         console.log('');
-        console.log(chalk.bold.magenta('  🔀 Forks'));
-        console.log(chalk.gray('  ─────────────────────────────────────'));
+        console.log(chalk.bold(MODE_CONSULTANT('  🔀 Forks')));
+        console.log(MUTED('  ─────────────────────────────────────'));
 
         if (forks.length === 0) {
-          console.log(chalk.gray('  No forks yet.'));
-          console.log(chalk.gray('  Run `bob fork "title"` to create one.'));
+          console.log(MUTED('  No forks yet.'));
+          console.log(MUTED('  Run `bob fork "title"` to create one.'));
         } else {
           for (const fork of forks) {
-            console.log(`  ${chalk.magenta('⚡')} ${chalk.white(fork.title || 'Untitled')}`);
-            console.log(chalk.gray(`    ${fork.summary?.slice(0, 60) || 'No summary'}${fork.summary?.length > 60 ? '...' : ''}`));
-            console.log(chalk.gray(`    ID: ${fork.forkConversationId?.slice(0, 24) || fork.id.slice(0, 24)}...`));
+            console.log(`  ${MODE_CONSULTANT('⚡')} ${chalk.white(fork.title || 'Untitled')}`);
+            console.log(MUTED(`    ${fork.summary?.slice(0, 60) || 'No summary'}${fork.summary?.length > 60 ? '...' : ''}`));
+            console.log(MUTED(`    ID: ${fork.forkConversationId?.slice(0, 24) || fork.id.slice(0, 24)}...`));
             console.log('');
           }
         }
 
-        console.log(chalk.gray('  ─────────────────────────────────────'));
-        console.log(chalk.gray('  Join a fork: bob conversations join → select it'));
+        console.log(MUTED('  ─────────────────────────────────────'));
+        console.log(MUTED('  Join a fork: bob conversations join → select it'));
         console.log('');
-
       } catch (error: any) {
         console.log('');
-        console.log(chalk.red(`  ❌ ${error.message}`));
+        console.log(ERROR(`  ❌ ${error.message}`));
         console.log('');
       }
     });
