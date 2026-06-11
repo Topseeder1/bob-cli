@@ -11,7 +11,7 @@
 
 **Bob's CLI** is a locally-installed developer tool that provides a senior-level AI engineering partner directly inside your native terminal. Stay in your development environment. Never switch to a browser. Ship faster.
 
-![Bob's CLI](https://raw.githubusercontent.com/Topseeder1/bob-cli/master/assets/BobsWelcome.gif)
+![Bob's CLI](assets/BobsWelcome.gif)
 
 [Installation](#installation) · [Quick Start](#quick-start) · [Features](#features) · [Docs](https://seedling-io.gitbook.io/bob-cli/)
 
@@ -95,7 +95,7 @@ Sync to web. Access Claude, Gemini, deep dives, forks, and personalization.
 
 When you first install Bob's CLI, you're greeted with a branded welcome screen:
 
-![Welcome Screen](https://raw.githubusercontent.com/Topseeder1/bob-cli/master/assets/WelcomeScreen.gif)
+![Welcome Screen](assets/WelcomeScreen.gif)
 
 ---
 
@@ -121,7 +121,7 @@ When you first install Bob's CLI, you're greeted with a branded welcome screen:
 
 Bob performs production-grade QA reviews across your entire codebase — identifying bugs, features, improvements, and upgrades with actionable implementation instructions:
 
-![Analysis Dashboard](https://raw.githubusercontent.com/Topseeder1/bob-cli/master/assets/AnalysisDashboard.png)
+![Analysis Dashboard](assets/AnalysisDashboard.png)
 
 ```bash
 bob analyse              # Run full code review
@@ -133,7 +133,7 @@ bob analyse --auto       # Auto-fix with safety constraints
 
 ## Commands
 
-![Help Output](https://raw.githubusercontent.com/Topseeder1/bob-cli/master/assets/BobCliHelpOutput.gif)
+![Help Output](assets/BobCliHelpOutput.gif)
 
 ```
 bob chat "question"                # AI coding partner
@@ -205,4 +205,5 @@ Bob's CLI · Bob's Workshop · Seedling
 *Written by Bob.*
 
 </div>
+
 
