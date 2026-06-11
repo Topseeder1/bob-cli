@@ -11,7 +11,7 @@
 
 **Bob's CLI** is a locally-installed developer tool that provides a senior-level AI engineering partner directly inside your native terminal. Stay in your development environment. Never switch to a browser. Ship faster.
 
-![Bob's CLI](assets/BobWelcome.gif)
+![Bob's CLI](https://raw.githubusercontent.com/Topseeder1/bob-cli/master/assets/BobWelcome.gif)
 
 [Installation](#installation) · [Quick Start](#quick-start) · [Features](#features) · [Docs](https://seedling-io.gitbook.io/bob-cli/)
 
@@ -26,6 +26,8 @@
 ## Why Bob's CLI?
 
 Every other AI coding assistant lives in a browser, disconnected from your actual workflow. Bob lives where your code lives — in your terminal. He sees your files, understands your architecture, writes code with your approval, and learns how YOU work over time.
+
+**We believe AI should empower developers, not exploit them.** Your code stays on your machine. Your data belongs to you. No surveillance, no vendor lock-in, no token meters draining your wallet while you think. Bob's CLI is built for the developer who refuses to hand over sovereignty in exchange for convenience. This is AI that works FOR you — on YOUR hardware, under YOUR control, at YOUR pace. Power to the people who build.
 
 | Feature | Bob's CLI | Claude Code | Copilot | Cursor |
 |---------|-----------|-------------|---------|--------|
@@ -95,7 +97,7 @@ Sync to web. Access Claude, Gemini, deep dives, forks, and personalization.
 
 When you first install Bob's CLI, you're greeted with a branded welcome screen:
 
-![Welcome Screen](assets/WelcomeScreen.gif)
+![Welcome Screen](https://raw.githubusercontent.com/Topseeder1/bob-cli/master/assets/WelcomeScreen.gif)
 
 ---
 
@@ -121,7 +123,7 @@ When you first install Bob's CLI, you're greeted with a branded welcome screen:
 
 Bob performs production-grade QA reviews across your entire codebase — identifying bugs, features, improvements, and upgrades with actionable implementation instructions:
 
-![Analysis Dashboard](assets/AnalysisDashboard.png)
+![Analysis Dashboard](https://raw.githubusercontent.com/Topseeder1/bob-cli/master/assets/AnalysisDashboard.png)
 
 ```bash
 bob analyse              # Run full code review
@@ -133,7 +135,7 @@ bob analyse --auto       # Auto-fix with safety constraints
 
 ## Commands
 
-![Help Output](assets/BobCliHelpOutput.gif)
+![Help Output](https://raw.githubusercontent.com/Topseeder1/bob-cli/master/assets/BobCliHelpOutput.gif)
 
 ```
 bob chat "question"                # AI coding partner
@@ -188,6 +190,21 @@ Same commands. Scale without changing tools.
 
 ---
 
+## The Philosophy
+
+Bob's CLI exists because we believe the future of software development should be **owned by the developer, not rented from a corporation.**
+
+- Your AI runs on **your hardware** — not someone else's data center
+- Your source code **never leaves your machine** — unless you choose to connect
+- Your conversations, your profile, your workflow — **yours to keep, yours to control**
+- Zero cost to start. Zero permission needed. Zero compromises on privacy.
+
+The cloud is optional. The power is not.
+
+**This is AI for the people who build the future — not the companies who gatekeep it.**
+
+---
+
 ## Documentation
 
 - 📖 Full Docs: https://seedling-io.gitbook.io/bob-cli/
@@ -199,6 +216,8 @@ Same commands. Scale without changing tools.
 <div align="center">
 
 **The AI coding tool that learns how you think.**
+
+**Sovereign. Free. Yours.**
 
 Bob's CLI · Bob's Workshop · Seedling
 
