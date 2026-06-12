@@ -1,4 +1,3 @@
-// File: README.md
 <div align="center">
 
 # ◉ Bob's CLI

@@ -1,6 +1,6 @@
 {
   "name": "@bobsworkshop/cli",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "Bob's CLI — AI coding assistant and Forge orchestrator",
   "type": "module",
   "files": [
@@ -30,7 +30,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/bobsworkshop/bob-cli"
+    "url": "https://github.com/Topseeder1/bob-cli"
   },
   "dependencies": {
     "axios": "^1.17.0",
