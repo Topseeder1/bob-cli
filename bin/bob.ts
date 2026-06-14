@@ -1,4 +1,3 @@
-// File: bin/bob.ts
 import { Command } from 'commander';
 import chalk from 'chalk';
 import * as path from 'path';
@@ -18,6 +17,9 @@ import { registerAutonomyCommand } from '../src/commands/autonomy.js';
 import { registerServeCommand } from '../src/commands/serve.js';
 import { registerRemoteCommand } from '../src/commands/remote.js';
 import { registerProfileCommand } from '../src/commands/profile.js';
+import { registerUserBobCommand } from '../src/commands/userbob.js';
+import { registerCommandCenterCommand } from '../src/commands/command-center.js';
+
 
 // ─── DESIGN TOKENS ───
 const BRAND_PRIMARY = chalk.hex('#E66F24');
@@ -111,7 +113,10 @@ function printCustomHelp(): void {
   console.log(MODE_CONSULTANT('  Profile & Identity'));
   printCmd('profile', 'View your behavioral DNA dashboard');
   printCmd('profile --cloud', 'Generate cloud-powered daily profile');
+  printCmd('userbob', 'Launch your UserBob digital twin');
   printCmd('byok', 'Manage Bring Your Own Key configuration');
+  printCmd('command-center', 'Autonomous Command Center — inspect and approve tasks');
+  printCmd('cc', 'Alias for command-center');
   console.log('');
 
   // ─── CONFIGURATION ───
@@ -191,6 +196,8 @@ registerAutonomyCommand(program);
 registerServeCommand(program);
 registerRemoteCommand(program);
 registerProfileCommand(program);
+registerUserBobCommand(program);
+registerCommandCenterCommand(program);
 
 // ─── GLOBAL ERROR BOUNDARY ───
 process.on('uncaughtException', (error) => {

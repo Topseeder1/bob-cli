@@ -352,3 +352,36 @@ export async function getTodayMessages(projectName?: string): Promise<{ role: st
     return msg.timestamp >= twentyFourHoursAgo;
   });
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// DNA STRING BUILDER — Used by UserBob to inject persona context
+// ═══════════════════════════════════════════════════════════════════
+
+export function buildDNAString(): string | null {
+  const dna = loadCurrentDNA();
+  if (!dna) return null;
+
+  const weekly = loadWeeklyProfiles(1)[0] || null;
+
+  const lines: string[] = [
+    '### USER BEHAVIORAL DNA ###',
+    `Archetype: ${dna.archetype || 'Unknown'}`,
+    `Communication Style: ${dna.communicationStyle || 'Unknown'}`,
+    `Work Rhythm: ${dna.workRhythm || 'Unknown'}`,
+    `Decision Making: ${dna.decisionMaking || 'Unknown'}`,
+    `Emotional State: ${dna.emotionalState || 'Unknown'}`,
+  ];
+
+  if (dna.growth) lines.push(`Growth Focus: ${dna.growth}`);
+  if (dna.source) lines.push(`Profile Source: ${dna.source} (${dna.lastUpdated || 'unknown date'})`);
+
+  if (weekly) {
+    lines.push('');
+    lines.push('--- WEEKLY TRAJECTORY ---');
+    if (weekly.trajectory) lines.push(`Weekly Arc: ${weekly.trajectory}`);
+    if (weekly.moodShift) lines.push(`Mood Shift: ${weekly.moodShift}`);
+    if (weekly.focusEvolution) lines.push(`Focus Evolution: ${weekly.focusEvolution}`);
+  }
+
+  return lines.join('\n');
+}
