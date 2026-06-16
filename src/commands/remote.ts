@@ -1,3 +1,5 @@
+// File: src/commands/remote.ts
+
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
@@ -24,7 +26,22 @@ export function registerRemoteCommand(program: Command): void {
     .option('--auto', 'For analyse: run auto-fix mode')
     .option('-i, --interactive', 'Enter interactive remote session')
     .option('--session <id>', 'Target a specific Active Bob session')
-    .action(async (type: string | undefined, message: string | undefined, options: { new?: boolean; auto?: boolean; interactive?: boolean; session?: string }) => {
+    .option('--source', 'For backup/restore: use source code mode')
+    .option('--global', 'For backup/restore: use global mode (Grid only)')
+    .option('--archive <name>', 'For backup: save as named archive')
+    .action(async (
+      type: string | undefined,
+      message: string | undefined,
+      options: {
+        new?: boolean;
+        auto?: boolean;
+        interactive?: boolean;
+        session?: string;
+        source?: boolean;
+        global?: boolean;
+        archive?: string;
+      }
+    ) => {
       const config = getConfig();
 
       if (!config.loggedIn || !config.authToken) {
@@ -47,14 +64,18 @@ export function registerRemoteCommand(program: Command): void {
         return;
       }
 
-      // ─── STATUS (explicit no-type, no-interactive) ───
+      // ─── STATUS ───
       if (!type) {
         await showConnectionStatus(config);
         return;
       }
 
       // ─── DISPATCH ───
-      const validTypes = ['chat', 'consult', 'index', 'analyse', 'push', 'autonomy'];
+      const validTypes = [
+        'chat', 'consult', 'index', 'analyse',
+        'push', 'autonomy', 'backup', 'restore',
+      ];
+
       if (!validTypes.includes(type)) {
         console.log('');
         console.log(ERROR(`  ❌ Invalid command type: "${type}"`));
@@ -66,6 +87,9 @@ export function registerRemoteCommand(program: Command): void {
       const payload: any = { conversationId: config.conversationId };
       if (message) payload.message = message;
       if (options.auto) payload.auto = true;
+      if (options.source) payload.isSource = true;
+      if (options.global) payload.isGlobal = true;
+      if (options.archive) payload.archiveName = options.archive;
 
       if ((type === 'chat' || type === 'consult' || type === 'push') && !message) {
         console.log('');
@@ -112,17 +136,22 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
 
   console.log('');
   console.log(BORDER('  ╔══════════════════════════════════════════════════════════╗'));
-  console.log(BORDER('  ║') + INFO(`  🌐 Active Bob — Remote Session`) + MUTED(` (${activeBobName})`));
+  console.log(BORDER('  ║') + INFO('  🌐 Active Bob — Remote Session') + MUTED(` (${activeBobName})`));
   console.log(BORDER('  ╠══════════════════════════════════════════════════════════╣'));
   console.log(BORDER('  ║') + MUTED(`  Conversation: ${config.conversationId?.slice(0, 28)}...`));
   console.log(BORDER('  ║') + MUTED('  Commands dispatched to the remote machine.'));
   console.log(BORDER('  ║'));
   console.log(BORDER('  ║') + chalk.white('  Slash Commands:'));
-  console.log(BORDER('  ║') + MUTED('    ▸ /consult "msg"  — Strategic advice'));
-  console.log(BORDER('  ║') + MUTED('    ▸ /push "msg"     — Git commit & push'));
-  console.log(BORDER('  ║') + MUTED('    ▸ /index           — Re-index project'));
-  console.log(BORDER('  ║') + MUTED('    ▸ /analyse         — Run analysis'));
-  console.log(BORDER('  ║') + MUTED('    ▸ /exit            — Disconnect'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /consult "msg"        — Strategic advice'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /push "msg"           — Git commit & push'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /index                — Re-index project'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /analyse              — Run QA analysis'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /backup               — Backup context'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /backup source        — Backup source code'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /backup global        — Backup ~/.bob/ (Grid)'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /restore              — Restore latest context'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /restore source       — Restore latest source'));
+  console.log(BORDER('  ║') + MUTED('    ▸ /exit                 — Disconnect'));
   console.log(BORDER('  ╚══════════════════════════════════════════════════════════╝'));
   console.log('');
 
@@ -134,11 +163,7 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
   const prompt = (): void => {
     rl.question(INFO('  You (remote): '), async (input) => {
       const trimmed = input.trim();
-
-      if (!trimmed) {
-        prompt();
-        return;
-      }
+      if (!trimmed) { prompt(); return; }
 
       // ─── /exit ───
       if (trimmed === '/exit' || trimmed === '/quit') {
@@ -153,42 +178,60 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
       if (trimmed.startsWith('/consult ')) {
         const msg = trimmed.slice(9).trim().replace(/^["']|["']$/g, '');
         if (msg) {
-          await dispatchAndShow(config, 'consult', { message: msg, conversationId: config.conversationId }, targetSession);
+          await dispatchAndShow(config, 'consult', { message: msg }, targetSession);
         } else {
           console.log(ERROR('  ❌ Provide a message: /consult "your question"'));
         }
-        prompt();
-        return;
+        prompt(); return;
       }
 
       // ─── /push "message" ───
       if (trimmed.startsWith('/push ')) {
         const msg = trimmed.slice(6).trim().replace(/^["']|["']$/g, '');
         if (msg) {
-          await dispatchAndShow(config, 'push', { message: msg, conversationId: config.conversationId }, targetSession);
+          await dispatchAndShow(config, 'push', { message: msg }, targetSession);
         } else {
           console.log(ERROR('  ❌ Provide a commit message: /push "your message"'));
         }
-        prompt();
-        return;
+        prompt(); return;
       }
 
       // ─── /index ───
       if (trimmed === '/index') {
-        await dispatchAndShow(config, 'index', { conversationId: config.conversationId }, targetSession);
-        prompt();
-        return;
+        await dispatchAndShow(config, 'index', {}, targetSession);
+        prompt(); return;
       }
 
       // ─── /analyse ───
       if (trimmed === '/analyse' || trimmed === '/analyze') {
-        await dispatchAndShow(config, 'analyse', { conversationId: config.conversationId }, targetSession);
-        prompt();
-        return;
+        await dispatchAndShow(config, 'analyse', {}, targetSession);
+        prompt(); return;
+      }
+
+      // ─── /backup [source|global] ───
+      if (trimmed.startsWith('/backup')) {
+        const parts = trimmed.split(' ');
+        const flag = parts[1]?.toLowerCase();
+        const backupPayload: any = {};
+        if (flag === 'source') backupPayload.isSource = true;
+        if (flag === 'global') backupPayload.isGlobal = true;
+        await dispatchAndShow(config, 'backup', backupPayload, targetSession);
+        prompt(); return;
+      }
+
+      // ─── /restore [source|global] ───
+      if (trimmed.startsWith('/restore')) {
+        const parts = trimmed.split(' ');
+        const flag = parts[1]?.toLowerCase();
+        const restorePayload: any = {};
+        if (flag === 'source') restorePayload.isSource = true;
+        if (flag === 'global') restorePayload.isGlobal = true;
+        await dispatchAndShow(config, 'restore', restorePayload, targetSession);
+        prompt(); return;
       }
 
       // ─── Default: chat message ───
-      await dispatchAndShow(config, 'chat', { message: trimmed, conversationId: config.conversationId }, targetSession);
+      await dispatchAndShow(config, 'chat', { message: trimmed }, targetSession);
       prompt();
     });
   };
@@ -196,14 +239,25 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
   prompt();
 }
 
-async function dispatchAndShow(config: any, type: string, payload: any, targetSession?: string): Promise<void> {
-  const spinner = ora({ text: BRAND_SECONDARY(`  📡 Active Bob executing: ${type}...`), spinner: 'dots' }).start();
+async function dispatchAndShow(
+  config: any,
+  type: string,
+  payload: any,
+  targetSession?: string
+): Promise<void> {
+  const spinner = ora({
+    text: BRAND_SECONDARY(`  📡 Active Bob executing: ${type}...`),
+    spinner: 'dots',
+  }).start();
+
+  let pollCount = 0;
+  const MAX_POLLS = 300; // 10 minutes at 2s intervals
 
   try {
     const result = await callCloudFunction('sendRemoteCommand', {
       conversationId: config.conversationId,
-      type: type,
-      payload: payload,
+      type,
+      payload: { ...payload, conversationId: config.conversationId },
       targetSession: targetSession || null,
     });
 
@@ -216,12 +270,12 @@ async function dispatchAndShow(config: any, type: string, payload: any, targetSe
 
     const commandId = result.commandId;
 
-    // Wait for result
-    while (true) {
+    while (pollCount < MAX_POLLS) {
+      pollCount++;
       try {
         const pollResult = await callCloudFunction('getRemoteCommandResult', {
           conversationId: config.conversationId,
-          commandId: commandId,
+          commandId,
         });
 
         if (pollResult?.status === 'completed') {
@@ -244,6 +298,20 @@ async function dispatchAndShow(config: any, type: string, payload: any, targetSe
           } else if (pollResult.result?.message) {
             console.log('');
             console.log(SUCCESS(`  ✅ ${pollResult.result.message}`));
+
+            // ─── Show analysis counts if available ───────────
+            if (pollResult.result?.counts) {
+              const c = pollResult.result.counts;
+              console.log(MUTED(`     🐛 ${c.bugs} bugs  ⭐ ${c.features} features  🔧 ${c.improvements} improvements  ⬆️ ${c.upgrades} upgrades`));
+            }
+
+            // ─── Show backup details if available ───────────
+            if (pollResult.result?.sizeBytes) {
+              const sizeLabel = pollResult.result.sizeBytes < 1024 * 1024
+                ? `${(pollResult.result.sizeBytes / 1024).toFixed(1)} KB`
+                : `${(pollResult.result.sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+              console.log(MUTED(`     📦 Size: ${sizeLabel}`));
+            }
           } else if (pollResult.result?.error) {
             console.log('');
             console.log(ERROR(`  ❌ ${pollResult.result.error}`));
@@ -265,6 +333,13 @@ async function dispatchAndShow(config: any, type: string, payload: any, targetSe
 
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
+
+    // Timeout
+    spinner.stop();
+    console.log('');
+    console.log(WARNING('  ⚠️  Command timed out after 10 minutes.'));
+    console.log(MUTED('  The command may still be running on the remote machine.'));
+    console.log('');
 
   } catch (error: any) {
     spinner.stop();
@@ -320,12 +395,17 @@ async function showConnectionStatus(config: any): Promise<void> {
 
     if (activeSessions.length > 0) {
       console.log(MUTED('  Commands:'));
-      console.log(MUTED('    ▸ bob remote --interactive    — Persistent session'));
-      console.log(MUTED('    ▸ bob remote chat "message"   — One-shot'));
-      console.log(MUTED('    ▸ bob remote consult "msg"    — Strategic advice'));
-      console.log(MUTED('    ▸ bob remote push "msg"       — Git push'));
-      console.log(MUTED('    ▸ bob remote index            — Re-index'));
-      console.log(MUTED('    ▸ bob remote analyse          — Run analysis'));
+      console.log(MUTED('    ▸ bob remote --interactive         — Persistent session'));
+      console.log(MUTED('    ▸ bob remote chat "message"        — One-shot chat'));
+      console.log(MUTED('    ▸ bob remote consult "msg"         — Strategic advice'));
+      console.log(MUTED('    ▸ bob remote push "msg"            — Git push'));
+      console.log(MUTED('    ▸ bob remote index                 — Re-index project'));
+      console.log(MUTED('    ▸ bob remote analyse               — Run QA analysis'));
+      console.log(MUTED('    ▸ bob remote backup                — Backup context'));
+      console.log(MUTED('    ▸ bob remote backup --source       — Backup source code'));
+      console.log(MUTED('    ▸ bob remote backup --global       — Backup ~/.bob/ (Grid)'));
+      console.log(MUTED('    ▸ bob remote restore               — Restore latest'));
+      console.log(MUTED('    ▸ bob remote restore --source      — Restore latest source'));
       console.log('');
     }
 
@@ -345,7 +425,6 @@ async function discoverAndConnect(config: any): Promise<void> {
 
   try {
     const result = await callCloudFunction('listActiveBobs', {});
-
     spinner.stop();
     const bobs = result?.activeBobs || [];
 
@@ -405,7 +484,12 @@ async function discoverAndConnect(config: any): Promise<void> {
 // ONE-SHOT DISPATCH
 // ═══════════════════════════════════════════════════════════
 
-async function dispatchCommand(config: any, type: string, payload: any, targetSession?: string): Promise<void> {
+async function dispatchCommand(
+  config: any,
+  type: string,
+  payload: any,
+  targetSession?: string
+): Promise<void> {
   await dispatchAndShow(config, type, payload, targetSession);
 }
 

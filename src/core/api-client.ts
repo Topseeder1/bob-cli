@@ -1,12 +1,11 @@
+// File: src/core/api-client.ts
+
 import axios from 'axios';
 import { getConfig, setConfigValue } from './config-store.js';
 import { refreshAuthToken } from '../commands/login.js';
 
 const FUNCTIONS_BASE = 'https://us-central1-seedlingapp.cloudfunctions.net';
 
-/**
- * Calls a Firebase onCall Cloud Function.
- */
 export async function callCloudFunction(functionName: string, data: Record<string, any>): Promise<any> {
   const config = getConfig();
 
@@ -26,17 +25,29 @@ export async function callCloudFunction(functionName: string, data: Record<strin
         timeout: 180000,
       }
     );
-
     return response.data?.result || response.data;
 
   } catch (error: any) {
     const status = error.response?.status;
+    const serverMsg = error.response?.data?.error?.message
+      || error.response?.data?.error
+      || error.message
+      || `Request failed with status ${status}`;
 
+    // ─── 401: try refresh once, then give up ───
     if (status === 401 && config.refreshToken) {
+      let newToken: string;
       try {
-        const newToken = await refreshAuthToken(config.refreshToken);
+        newToken = await refreshAuthToken(config.refreshToken);
+      } catch {
+        // refresh token itself is dead — only NOW log out
+        setConfigValue('loggedIn', false);
+        throw new Error('Session expired. Run `bob login` again.');
+      }
 
-        const retryResponse = await axios.post(
+      // retry with new token
+      try {
+        const retry = await axios.post(
           `${FUNCTIONS_BASE}/${functionName}`,
           { data },
           {
@@ -47,25 +58,30 @@ export async function callCloudFunction(functionName: string, data: Record<strin
             timeout: 180000,
           }
         );
-
-        return retryResponse.data?.result || retryResponse.data;
-
-      } catch (refreshError: any) {
-        setConfigValue('loggedIn', false);
-        throw new Error('Session expired. Run `bob login` again.');
+        return retry.data?.result || retry.data;
+      } catch (retryError: any) {
+        const retryStatus = retryError.response?.status;
+        const retryMsg = retryError.response?.data?.error?.message || retryError.message;
+        // ─── Still 401 after fresh token = truly expired ───
+        if (retryStatus === 401) {
+          setConfigValue('loggedIn', false);
+          throw new Error('Session expired. Run `bob login` again.');
+        }
+        // ─── Any other error on retry — do NOT log out ───
+        throw new Error(retryMsg);
       }
+    }
+
+    // ─── 403: permission denied — do NOT log out ───
+    if (status === 403) {
+      throw new Error(serverMsg);
     }
 
     if (status === 404) {
       throw new Error(`Function "${functionName}" not found. Is it deployed?`);
     }
 
-    if (status === 403) {
-      throw new Error('Permission denied. You may not have access to this feature.');
-    }
-
     if (status === 500) {
-      const serverMsg = error.response?.data?.error?.message || error.response?.data?.error || 'Internal server error';
       throw new Error(`Server error: ${serverMsg}`);
     }
 
@@ -73,15 +89,14 @@ export async function callCloudFunction(functionName: string, data: Record<strin
       throw new Error('Rate limited. Please wait a moment and try again.');
     }
 
-    const errorMsg = error.response?.data?.error?.message || error.message || `Request failed with status ${status}`;
-    throw new Error(errorMsg);
+    if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
+      throw new Error('Connection was reset. The function may still be running.');
+    }
+
+    throw new Error(serverMsg);
   }
 }
 
-/**
- * Calls a Firebase onRequest Cloud Function (raw HTTP endpoint).
- * Used for functions like getPersonalizedResponse that use onRequest instead of onCall.
- */
 export async function callHTTPFunction(functionName: string, data: Record<string, any>): Promise<any> {
   const config = getConfig();
 
@@ -101,17 +116,26 @@ export async function callHTTPFunction(functionName: string, data: Record<string
         timeout: 300000,
       }
     );
-
     return response.data?.data || response.data;
 
   } catch (error: any) {
     const status = error.response?.status;
+    const serverMsg = error.response?.data?.error?.message
+      || error.response?.data?.error
+      || error.message
+      || `Request failed with status ${status}`;
 
     if (status === 401 && config.refreshToken) {
+      let newToken: string;
       try {
-        const newToken = await refreshAuthToken(config.refreshToken);
+        newToken = await refreshAuthToken(config.refreshToken);
+      } catch {
+        setConfigValue('loggedIn', false);
+        throw new Error('Session expired. Run `bob login` again.');
+      }
 
-        const retryResponse = await axios.post(
+      try {
+        const retry = await axios.post(
           `${FUNCTIONS_BASE}/${functionName}`,
           { data },
           {
@@ -122,13 +146,20 @@ export async function callHTTPFunction(functionName: string, data: Record<string
             timeout: 300000,
           }
         );
-
-        return retryResponse.data?.data || retryResponse.data;
-
-      } catch (refreshError: any) {
-        setConfigValue('loggedIn', false);
-        throw new Error('Session expired. Run `bob login` again.');
+        return retry.data?.data || retry.data;
+      } catch (retryError: any) {
+        const retryStatus = retryError.response?.status;
+        const retryMsg = retryError.response?.data?.error?.message || retryError.message;
+        if (retryStatus === 401) {
+          setConfigValue('loggedIn', false);
+          throw new Error('Session expired. Run `bob login` again.');
+        }
+        throw new Error(retryMsg);
       }
+    }
+
+    if (status === 403) {
+      throw new Error(serverMsg);
     }
 
     if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
@@ -139,12 +170,7 @@ export async function callHTTPFunction(functionName: string, data: Record<string
       throw new Error(`Function "${functionName}" not found. Is it deployed?`);
     }
 
-    if (status === 403) {
-      throw new Error('Permission denied. You may not have access to this feature.');
-    }
-
     if (status === 500) {
-      const serverMsg = error.response?.data?.error?.message || error.response?.data?.error || 'Internal server error';
       throw new Error(`Server error: ${serverMsg}`);
     }
 
@@ -152,8 +178,7 @@ export async function callHTTPFunction(functionName: string, data: Record<string
       throw new Error('Rate limited. Please wait a moment and try again.');
     }
 
-    const errorMsg = error.response?.data?.error?.message || error.message || `Request failed with status ${status}`;
-    throw new Error(errorMsg);
+    throw new Error(serverMsg);
   }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@bobsworkshop/cli",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Bob's CLI — AI coding assistant and Forge orchestrator",
   "type": "module",
   "files": [
@@ -45,11 +45,13 @@
     "open": "^11.0.0",
     "ora": "^9.4.0",
     "simple-git": "^3.36.0",
+    "tar": "^7.5.16",
     "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/diff": "^8.0.0",
     "@types/node": "^25.9.1",
+    "@types/tar": "^7.0.87",
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"

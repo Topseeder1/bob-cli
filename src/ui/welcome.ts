@@ -1,3 +1,4 @@
+// File: src/ui/welcome.ts
 import chalk from 'chalk';
 import { getConfig, setConfigValue } from '../core/config-store.js';
 
@@ -101,6 +102,15 @@ async function playWelcomeAnimation(): Promise<void> {
   console.log(MUTED('  ║') + pad('  ' + BRAND_SECONDARY('▸ bob login') + MUTED('          — Connect to the platform'), 47));
   console.log(MUTED('  ║') + pad('  ' + BRAND_SECONDARY('▸ bob push "msg"') + MUTED('     — Git commit + push'), 41));
   console.log(MUTED('  ║') + pad('  ' + BRAND_SECONDARY('▸ bob --help') + MUTED('         — See all commands'), 40));
+  console.log(MUTED('  ║') + pad('', 0));
+
+  // ─── SEPARATOR ───────────────────────────────────────────
+  console.log(hRule());
+
+  // ─── COMMUNITY ───────────────────────────────────────────
+  console.log(MUTED('  ║') + pad('', 0));
+  console.log(MUTED('  ║') + pad('  ' + SUCCESS('🌱 Join 1,700+ builders in our community:'), 43));
+  console.log(MUTED('  ║') + pad('  ' + INFO('https://discord.gg/wM9ZBXdd'), 21));
   console.log(MUTED('  ║') + pad('', 0));
 
   // ─── BOTTOM BORDER ────────────────────────────────────────

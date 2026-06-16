@@ -1,3 +1,4 @@
+// File: src/commands/login.ts
 import { Command } from 'commander';
 import chalk from 'chalk';
 import http from 'http';
@@ -30,14 +31,42 @@ export function registerLoginCommand(program: Command): void {
       console.log('');
 
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
       const answer = await new Promise<string>(resolve => {
         rl.question(chalk.cyan('  Continue with login? (y/n): '), resolve);
       });
-      rl.close();
 
       if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
+        rl.close();
         console.log('');
         console.log(chalk.gray('  Login cancelled.'));
+        console.log('');
+        return;
+      }
+
+      // ─── SOVEREIGNTY CONSENT GATE ───
+      console.log('');
+      console.log(chalk.hex('#455A64')('  ╔' + '═'.repeat(54) + '╗'));
+      console.log(chalk.hex('#455A64')('  ║') + chalk.hex('#FFAB00')('  📋 Before connecting to Bob\'s Workshop:        ') + chalk.hex('#455A64')('  ║'));
+      console.log(chalk.hex('#455A64')('  ╠' + '═'.repeat(54) + '╣'));
+      console.log(chalk.hex('#455A64')('  ║') + '                                                        ' + chalk.hex('#455A64')('║'));
+      console.log(chalk.hex('#455A64')('  ║') + chalk.hex('#66BB6A')('  ✅ What syncs:  ') + chalk.white('Conversation context + behavioral profile') + ' ' + chalk.hex('#455A64')('║'));
+      console.log(chalk.hex('#455A64')('  ║') + chalk.hex('#EF5350')('  ❌ Never syncs: ') + chalk.white('Your source code (stays on your machine) ') + ' ' + chalk.hex('#455A64')('║'));
+      console.log(chalk.hex('#455A64')('  ║') + chalk.hex('#EF5350')('  ❌ No telemetry, no silent uploads, no gray areas.  ') + chalk.hex('#455A64')('  ║'));
+      console.log(chalk.hex('#455A64')('  ║') + '                                                        ' + chalk.hex('#455A64')('║'));
+      console.log(chalk.hex('#455A64')('  ║') + chalk.gray('  Return to local-only anytime with `bob logout`.     ') + chalk.hex('#455A64')('  ║'));
+      console.log(chalk.hex('#455A64')('  ║') + '                                                        ' + chalk.hex('#455A64')('║'));
+      console.log(chalk.hex('#455A64')('  ╚' + '═'.repeat(54) + '╝'));
+      console.log('');
+
+      const consentAnswer = await new Promise<string>(resolve => {
+        rl.question(chalk.cyan('  Confirm sync consent? (y/n): '), resolve);
+      });
+      rl.close();
+
+      if (consentAnswer.toLowerCase() !== 'y' && consentAnswer.toLowerCase() !== 'yes') {
+        console.log('');
+        console.log(chalk.gray('  Login cancelled. You remain on Tier 1 (local-first).'));
         console.log('');
         return;
       }
