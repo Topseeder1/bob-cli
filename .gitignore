@@ -1,5 +1,30 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+
+# Bob CLI backups
 .bob-backups/
 *.bak
+
+# Environment
 .env
+.env.local
+.env.*
+
+# Agent runtime data
+**/agents/registry.json
+**/agents/mission_*.json
+**/agents/active_mission.json
+**/agents/pending-commits/
+**/agents/commit-reviews/
+**/agents/feedback/
+**/agents/*/messages/
+**/agents/*/session.json
+**/agents/*/summary.txt
+**/agents/*/output/
+**/agents/agent-config.json
+
+# Bob local data
+~/.bob/
