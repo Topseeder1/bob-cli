@@ -28,6 +28,7 @@ import {
   handleRunCommand,
 } from '../ui/agent-run-renderer.js';
 import { ExecutionEvent } from '../core/agent-executor.js';
+import { clearAllPendingCommits } from '../core/agent-tools.js';
 
 const AMBER  = chalk.hex('#FFAB00');
 const GREEN  = chalk.hex('#66BB6A');
@@ -77,7 +78,10 @@ export function registerAgentRunCommand(program: Command): void {
         return;
       }
 
-      const agents = registry.agents.filter(a => a.status === 'active' || a.status === 'idle');
+      const agents = registry.agents.filter(
+        a => a.status === 'active' || a.status === 'idle'
+      );
+
       if (agents.length === 0) {
         console.log('');
         console.log(AMBER('  ⚠️  No active agents found.'));
@@ -85,6 +89,7 @@ export function registerAgentRunCommand(program: Command): void {
         return;
       }
 
+      // ─── Resume existing mission ───────────────────────────────
       if (options.resume) {
         const activeMissionId = getActiveMissionId(cwd);
         if (!activeMissionId) {
@@ -102,13 +107,18 @@ export function registerAgentRunCommand(program: Command): void {
         }
         console.log('');
         console.log(AMBER(`  🔄 Resuming mission: ${existingMission.description.slice(0, 50)}...`));
+        // On resume — keep pending commits (they belong to this mission)
         await executeMission(existingMission, agents, cwd, config.localEndpoint!, options);
         return;
       }
 
+      // ─── Resolve mission description ───────────────────────────
       let missionDescription = missionArgs.join(' ').trim();
       if (!missionDescription) {
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
         missionDescription = await new Promise<string>(resolve => {
           rl.question(AMBER('  🎬 What is the mission? > '), resolve);
         });
@@ -120,6 +130,12 @@ export function registerAgentRunCommand(program: Command): void {
         missionDescription = missionDescription.trim();
       }
 
+      // ─── Clear pending commits from previous sessions ──────────
+      // Fresh mission = clean slate. Leftover commits from dead
+      // sessions should not fire at the start of a new mission.
+      clearAllPendingCommits(cwd);
+
+      // ─── Generate task map ─────────────────────────────────────
       console.log('');
       const planSpinner = ora({
         text: AMBER('  🎬 DirectorBob is analyzing your team and building the task map...'),
@@ -128,7 +144,12 @@ export function registerAgentRunCommand(program: Command): void {
 
       let taskDefs: any[];
       try {
-        taskDefs = await generateTaskMap(missionDescription, agents, cwd, config.localEndpoint!);
+        taskDefs = await generateTaskMap(
+          missionDescription,
+          agents,
+          cwd,
+          config.localEndpoint!
+        );
         planSpinner.stop();
       } catch (error: any) {
         planSpinner.stop();
@@ -257,7 +278,15 @@ async function executeMission(
   };
 
   try {
-    const result = await runAutonomousLoop(mission, agents, cwd, localEndpoint, state, onEvent);
+    const result = await runAutonomousLoop(
+      mission,
+      agents,
+      cwd,
+      localEndpoint,
+      state,
+      onEvent
+    );
+
     rl.close();
 
     if (result.completed) {
