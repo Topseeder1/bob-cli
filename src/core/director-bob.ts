@@ -1,3 +1,5 @@
+// File: src/core/director-bob.ts
+
 import { LocalChatMessage } from '../ai/providers/local.js';
 import { callLocalModel } from '../ai/providers/local.js';
 import * as fs from 'fs';
@@ -12,11 +14,9 @@ import {
   createMission,
   loadMission,
   saveMission,
-  updateTaskStatus,
   updateTaskResult,
   addTaskNote,
   getReadyTasks,
-  getRunningTasks,
   getMissionSummary,
   isMissionComplete,
   isMissionBlocked,
@@ -30,8 +30,16 @@ import {
   ExecutionEvent,
   TaskExecutionResult,
 } from './agent-executor.js';
-import { buildLocalContext } from './context-builder.js';
 import { loadSummaries } from './project-map.js';
+import {
+  loadPendingCommits,
+  clearPendingCommit,
+} from './agent-tools.js';
+import {
+  reviewCommit,
+  restoreDeniedFiles,
+  saveCommitReview,
+} from './agent-reviewer.js';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────
 
@@ -54,43 +62,21 @@ export interface DirectorState {
   aborted: boolean;
   userInjections: string[];
   satisfactionOverrides: Record<string, number>;
+  pendingCommitApproval: null;
 }
 
-// ─── FILE ASSESSMENT ──────────────────────────────────────────────
+// ─── PROJECT CONTEXT ──────────────────────────────────────────────
 
-interface FileAssessment {
-  filePath: string;
-  exists: boolean;
-  lineCount: number;
-  isEmpty: boolean;
-  hasPlaceholder: boolean;
-  preview: string;
-  status: 'working' | 'incomplete' | 'empty' | 'missing';
-}
-
-/**
- * DirectorBob scans the project to understand what already exists,
- * what is broken, and what is missing — before generating any tasks.
- *
- * This is the "senior engineer walking in cold" assessment.
- */
-async function scanAndAssessMission(
-  missionDescription: string,
-  agents: AgentRegistryEntry[],
-  cwd: string,
-  localEndpoint: string
-): Promise<{
-  assessments: FileAssessment[];
+function buildDirectorProjectContext(cwd: string): {
   existingFiles: string;
   hasTests: boolean;
-  assessmentSummary: string;
-}> {
-
-  // ─── Get all indexed files ─────────────────────────────────────
+  fileAssessment: string;
+} {
   const summaries = loadSummaries(cwd);
-  const allIndexedFiles = summaries ? Object.keys(summaries) : [];
+  const existingFiles = summaries
+    ? Object.keys(summaries).slice(0, 20).join('\n')
+    : 'No indexed files found.';
 
-  // ─── Check for test framework ──────────────────────────────────
   const hasVitest =
     fs.existsSync(path.join(cwd, 'vitest.config.ts')) ||
     fs.existsSync(path.join(cwd, 'vitest.config.js'));
@@ -99,145 +85,33 @@ async function scanAndAssessMission(
     fs.existsSync(path.join(cwd, 'jest.config.js'));
   const hasTests = hasVitest || hasJest;
 
-  // ─── Build existing files list for prompt ─────────────────────
-  const existingFiles = allIndexedFiles.slice(0, 20).join('\n');
-
-  // ─── Ask the model what files are relevant to this mission ────
-  const relevancePrompt = `You are DirectorBob. Given this mission and the list of existing project files, identify which files are directly relevant to completing the mission.
-
-MISSION: ${missionDescription}
-
-EXISTING PROJECT FILES:
-${existingFiles}
-
-Return ONLY a JSON array of the most relevant file paths from the list above.
-Maximum 8 files. No explanation. No markdown.
-["src/path/file.ts", ...]`;
-
-  let relevantFilePaths: string[] = [];
-  try {
-    const messages: LocalChatMessage[] = [
-      { role: 'system', content: 'Return ONLY a valid JSON array of file paths. No markdown.' },
-      { role: 'user', content: relevancePrompt },
-    ];
-    const rawResponse = await callLocalModel(localEndpoint, messages);
-    const responseText =
-      typeof rawResponse === 'object' && rawResponse.text
-        ? rawResponse.text
-        : (rawResponse as unknown as string);
-
-    const jsonMatch = responseText.match(/\[[\s\S]*?\]/);
-    if (jsonMatch) {
-      relevantFilePaths = JSON.parse(jsonMatch[0]);
-    }
-  } catch { }
-
-  // ─── Assess each relevant file ─────────────────────────────────
-  const assessments: FileAssessment[] = [];
-
-  for (const filePath of relevantFilePaths.slice(0, 8)) {
-    const absolutePath = path.join(cwd, filePath);
-    const exists = fs.existsSync(absolutePath);
-
-    if (!exists) {
-      assessments.push({
-        filePath,
-        exists: false,
-        lineCount: 0,
-        isEmpty: true,
-        hasPlaceholder: false,
-        preview: '',
-        status: 'missing',
-      });
-      continue;
-    }
-
-    try {
-      const content = fs.readFileSync(absolutePath, 'utf-8');
-      const lines = content.split('\n');
-      const lineCount = lines.length;
-      const preview = lines.slice(0, 6).join('\n');
-
-      const isEmpty = content.trim().length < 20;
-      const hasPlaceholder =
-        content.includes('// file content here') ||
-        content.includes('// TODO') ||
-        content.includes('// implement this') ||
-        (lineCount < 5 && content.trim().startsWith('//'));
-
-      let status: FileAssessment['status'];
-      if (isEmpty || hasPlaceholder) {
-        status = 'empty';
-      } else if (lineCount < 10) {
-        status = 'incomplete';
+  const assessmentLines: string[] = [];
+  if (summaries) {
+    for (const filePath of Object.keys(summaries).slice(0, 15)) {
+      const absolutePath = path.join(cwd, filePath);
+      if (fs.existsSync(absolutePath)) {
+        const content = fs.readFileSync(absolutePath, 'utf-8');
+        const lines = content.split('\n').length;
+        const isEmpty = content.trim().length < 20;
+        const isPlaceholder =
+          content.includes('// file content here') ||
+          content.includes('// TODO implement');
+        if (isEmpty || isPlaceholder) {
+          assessmentLines.push(`❌ EMPTY: ${filePath}`);
+        } else {
+          assessmentLines.push(`✅ EXISTS (${lines} lines): ${filePath}`);
+        }
       } else {
-        status = 'working';
-      }
-
-      assessments.push({
-        filePath,
-        exists: true,
-        lineCount,
-        isEmpty,
-        hasPlaceholder,
-        preview,
-        status,
-      });
-    } catch {
-      assessments.push({
-        filePath,
-        exists: true,
-        lineCount: 0,
-        isEmpty: true,
-        hasPlaceholder: false,
-        preview: '',
-        status: 'incomplete',
-      });
-    }
-  }
-
-  // ─── Build assessment summary for DirectorBob ─────────────────
-  const summaryLines: string[] = [];
-
-  const working = assessments.filter(a => a.status === 'working');
-  const incomplete = assessments.filter(a => a.status === 'incomplete');
-  const empty = assessments.filter(a => a.status === 'empty');
-  const missing = assessments.filter(a => a.status === 'missing');
-
-  if (working.length > 0) {
-    summaryLines.push('WORKING (do not overwrite unless specifically instructed):');
-    for (const a of working) {
-      summaryLines.push(`  ✅ ${a.filePath} (${a.lineCount} lines)`);
-    }
-  }
-
-  if (incomplete.length > 0) {
-    summaryLines.push('INCOMPLETE (exists but needs work):');
-    for (const a of incomplete) {
-      summaryLines.push(`  ⚠️  ${a.filePath} (${a.lineCount} lines)`);
-      if (a.preview) {
-        summaryLines.push(`     Preview: ${a.preview.split('\n')[0].slice(0, 60)}`);
+        assessmentLines.push(`🔲 MISSING: ${filePath}`);
       }
     }
   }
 
-  if (empty.length > 0) {
-    summaryLines.push('EMPTY/PLACEHOLDER (needs real implementation):');
-    for (const a of empty) {
-      summaryLines.push(`  ❌ ${a.filePath} — empty or placeholder`);
-    }
-  }
-
-  if (missing.length > 0) {
-    summaryLines.push('MISSING (does not exist yet — needs to be created):');
-    for (const a of missing) {
-      summaryLines.push(`  🔲 ${a.filePath} — does not exist`);
-    }
-  }
-
-  const assessmentSummary = summaryLines.join('\n');
-
-  return { assessments, existingFiles, hasTests, assessmentSummary };
+  return {
+    existingFiles,
+    hasTests,
+    fileAssessment: assessmentLines.join('\n'),
+  };
 }
 
 // ─── TASK MAP GENERATION ──────────────────────────────────────────
@@ -252,41 +126,30 @@ export async function generateTaskMap(
   'consecutiveLowCount' | 'result' | 'filesCreated' | 'filesModified' |
   'createdAt' | 'startedAt' | 'completedAt' | 'notes'>[]> {
 
-  // ─── Step 1: Scan and assess the project first ────────────────
-  const { assessments, existingFiles, hasTests, assessmentSummary } =
-    await scanAndAssessMission(missionDescription, agents, cwd, localEndpoint);
+  const agentList = agents.map(a => `${a.name}: ${a.task}`).join('\n');
+  const { existingFiles, hasTests, fileAssessment } = buildDirectorProjectContext(cwd);
 
-  const agentList = agents
-    .map(a => `${a.name}: ${a.task}`)
-    .join('\n');
-
-  // ─── Step 2: Generate tasks based on assessment ───────────────
   const prompt = `You are DirectorBob — a senior engineering lead.
 
-You have just assessed the codebase. Here is what you found:
-
-${assessmentSummary || 'No relevant files found yet — everything needs to be created.'}
-
 MISSION: ${missionDescription}
-
-ALL PROJECT FILES:
-${existingFiles}
 
 AGENTS:
 ${agentList}
 
-Based on the assessment above, generate a task map to complete the mission.
+FILE ASSESSMENT (current project state):
+${fileAssessment || 'No assessment available — project may not be indexed.'}
 
-KEY RULES:
-- Do NOT assign tasks to create files that are already WORKING — leave them alone.
-- DO assign tasks to fix EMPTY or PLACEHOLDER files — they need real implementation.
-- DO assign tasks to complete INCOMPLETE files — they need more work.
-- DO assign tasks to create MISSING files that the mission requires.
-- Every task instruction must reference the EXACT file path.
-- ${hasTests ? 'Test tasks allowed.' : 'NO test tasks — no test framework configured.'}
-- 3 to 6 tasks maximum.
-- dependsOn uses t1, t2, t3 format.
-- Agent names must NOT include @ symbol.
+ALL EXISTING FILES:
+${existingFiles}
+
+CRITICAL RULES:
+1. Generate 3 to 6 specific, actionable tasks.
+2. Each task must reference EXACT file paths.
+3. For files marked ✅ EXISTS — agents must make SURGICAL changes only. They must NOT rewrite or gut these files.
+4. For files marked ❌ EMPTY or 🔲 MISSING — agents should create or fill them.
+5. ${hasTests ? 'Test tasks allowed.' : 'NO test tasks — no test framework configured.'}
+6. Agent names must NOT include @ symbol.
+7. dependsOn uses t1, t2, t3 format.
 
 Respond with ONLY a valid JSON array. No explanation. No markdown:
 [{"assignedTo":"agentName","instruction":"specific instruction with exact file path","dependsOn":[]},...]`;
@@ -308,23 +171,16 @@ Respond with ONLY a valid JSON array. No explanation. No markdown:
 
     let rawTasks: any[] | null = null;
 
-    // Strategy 1: direct parse
     try {
       const trimmed = responseText.trim();
-      if (trimmed.startsWith('[')) {
-        rawTasks = JSON.parse(trimmed);
-      }
+      if (trimmed.startsWith('[')) rawTasks = JSON.parse(trimmed);
     } catch { }
 
-    // Strategy 2: regex extract
     if (!rawTasks) {
       const jsonMatch = responseText.match(/\[[\s\S]*?\]/);
-      if (jsonMatch) {
-        try { rawTasks = JSON.parse(jsonMatch[0]); } catch { }
-      }
+      if (jsonMatch) { try { rawTasks = JSON.parse(jsonMatch[0]); } catch { } }
     }
 
-    // Strategy 3: greedy
     if (!rawTasks) {
       const startIdx = responseText.indexOf('[');
       if (startIdx !== -1) {
@@ -335,12 +191,11 @@ Respond with ONLY a valid JSON array. No explanation. No markdown:
     }
 
     if (!rawTasks || !Array.isArray(rawTasks) || rawTasks.length === 0) {
-      console.error('[DIRECTORBOB] Failed to parse task map. Model returned:');
-      console.error(responseText.slice(0, 500));
+      console.error('[DIRECTORBOB] Failed to parse task map.');
       throw new Error('Invalid task map response from model.');
     }
 
-    return rawTasks.map((t: any, idx: number) => {
+    return rawTasks.map((t: any) => {
       const deps = (t.dependsOn || [])
         .map((dep: string) => {
           const match = dep.match(/t(\d+)/i);
@@ -367,11 +222,9 @@ Respond with ONLY a valid JSON array. No explanation. No markdown:
 
   } catch (error: any) {
     console.error(`[DIRECTORBOB] Task map failed: ${error.message}`);
-
-    // Fallback — one meaningful task per agent
     return agents.map((agent, idx) => ({
       assignedTo: agent.name.replace(/^@+/, ''),
-      instruction: `${agent.task}. Context: ${missionDescription}. Reference existing project files.`,
+      instruction: `${agent.task}. Context: ${missionDescription}. Make surgical changes only.`,
       dependsOn: idx > 0 ? [`__TASK_${idx - 1}__`] : [],
       outputFile: null,
       satisfactionTarget: 75,
@@ -399,50 +252,139 @@ export async function directorIntervene(
     })
     .join('\n\n');
 
-  const summaries = loadSummaries(cwd);
-  const existingFiles = summaries
-    ? Object.keys(summaries).slice(0, 20).join('\n')
-    : 'No indexed files.';
+  const { existingFiles } = buildDirectorProjectContext(cwd);
 
   const prompt = `You are DirectorBob. @${stuckAgent.name} is stagnating.
 
 STUCK TASK: ${task.instruction}
 AGENT: ${stuckAgent.name} — ${stuckAgent.task}
 LAST SCORE: ${task.lastSatisfactionScore}% / TARGET: ${task.satisfactionTarget}%
-ATTEMPTS: ${task.attemptCount} | DIRECTOR SURFACES: ${task.directorSurfaceCount}
+ATTEMPTS: ${task.attemptCount}
 
 RECENT NOTES:
 ${task.notes.slice(-3).join('\n')}
 
-TEAM:
-${agentSummaries}
+TEAM: ${agentSummaries}
+EXISTING FILES: ${existingFiles}
 
-EXISTING FILES:
-${existingFiles}
-
-Give @${stuckAgent.name} ONE specific directive to unblock them.
-Reference actual file paths. Tell them exactly what to do RIGHT NOW.
-Plain text only. 2 sentences maximum.`;
+Give ONE specific directive. Reference actual file paths. 2 sentences max. Plain text only.`;
 
   try {
     const messages: LocalChatMessage[] = [
-      {
-        role: 'system',
-        content: 'You are DirectorBob. Give a specific 2-sentence directive. Reference real files. Plain text only.',
-      },
+      { role: 'system', content: 'You are DirectorBob. 2-sentence directive. Reference real files. Plain text only.' },
       { role: 'user', content: prompt },
     ];
-
     const rawResponse = await callLocalModel(localEndpoint, messages);
-    const note =
-      typeof rawResponse === 'object' && rawResponse.text
-        ? rawResponse.text
-        : (rawResponse as unknown as string);
-
+    const note = typeof rawResponse === 'object' && rawResponse.text
+      ? rawResponse.text
+      : (rawResponse as unknown as string);
     return note.trim().split('\n')[0].slice(0, 200);
-
   } catch {
-    return `Use the // File: header format to write the actual complete file content now. Stop planning and execute immediately.`;
+    return `Use the // File: header format to write the actual complete file content now. Make surgical changes only.`;
+  }
+}
+
+// ─── INTELLIGENT COMMIT REVIEW ────────────────────────────────────
+
+/**
+ * DirectorBob processes pending commits with intelligent review.
+ *
+ * KEY FIX: When a commit is DENIED, the revision note is injected
+ * back into the originating task's notes array. This means on the
+ * agent's next attempt, the DIRECTOR NOTES section in the prompt
+ * contains exactly what was wrong — the agent learns from the denial.
+ */
+async function handlePendingCommits(
+  cwd: string,
+  localEndpoint: string,
+  taskMap: Map<string, AgentTask>,
+  mission: AgentMission,
+  onEvent?: (event: ExecutionEvent) => void
+): Promise<void> {
+  const pending = loadPendingCommits(cwd);
+  if (pending.length === 0) return;
+
+  const emit = (type: any, message: string, data?: any) => {
+    if (onEvent) onEvent({ type, agentName: 'directorBob', taskId: 'director', message, data });
+  };
+
+  for (const commit of pending) {
+    emit('thinking', `DirectorBob reviewing commit from @${commit.agentName}: "${commit.message}"`);
+
+    const task = taskMap.get(commit.taskId);
+    const taskInstruction = task?.instruction || commit.message;
+
+    const review = await reviewCommit(
+      taskInstruction,
+      commit.message,
+      commit.agentName,
+      commit.filesChanged,
+      cwd,
+      localEndpoint
+    );
+
+    saveCommitReview(review, commit.missionId, commit.taskId, cwd);
+
+    if (review.verdict === 'APPROVE') {
+      try {
+        const simpleGit = (await import('simple-git')).default;
+        const git = simpleGit(cwd);
+        await git.add('.');
+        const result = await git.commit(commit.message);
+        clearPendingCommit(commit.id, cwd);
+        emit('done', `DirectorBob approved ✅ committed: ${result.commit?.slice(0, 7)} — ${commit.message}`);
+
+        if (review.filesReviewed.some(f => f.verdict === 'WARN')) {
+          emit(
+            'thinking',
+            `⚠️  Warnings on: ${review.filesReviewed
+              .filter(f => f.verdict === 'WARN')
+              .map(f => f.filePath)
+              .join(', ')}`
+          );
+        }
+      } catch (e: any) {
+        clearPendingCommit(commit.id, cwd);
+        emit('error', `Commit failed after approval: ${e.message}`);
+      }
+
+    } else {
+      // ─── DENY: restore files + inject revision note into task ──
+      const { restored, failed } = restoreDeniedFiles(review, cwd);
+      clearPendingCommit(commit.id, cwd);
+
+      emit('error', `DirectorBob DENIED commit from @${commit.agentName}: ${review.reason}`);
+
+      if (restored.length > 0) {
+        emit('thinking', `Restored ${restored.length} file(s) from backup: ${restored.join(', ')}`);
+      }
+      if (failed.length > 0) {
+        emit('error', `Could not restore ${failed.length} file(s): ${failed.join(', ')}`);
+      }
+
+      // ─── KEY FIX: Inject revision note into task notes ────────
+      // This means the NEXT attempt the agent makes will have
+      // DirectorBob's specific feedback in its DIRECTOR NOTES
+      // section — the agent learns exactly what was wrong.
+      if (review.revisionNote && task) {
+        const revisionMessage = `COMMIT DENIED: ${review.revisionNote}`;
+        addTaskNote(mission, task.id, revisionMessage, cwd);
+        emit('response', `DirectorBob → @${commit.agentName}: ${review.revisionNote}`);
+
+        // ─── Reopen task as pending so agent retries ─────────────
+        // Reset satisfaction so agent doesn't think it's done
+        task.status = 'pending';
+        task.lastSatisfactionScore = null;
+        saveMission(mission, cwd);
+
+        emit(
+          'thinking',
+          `Task reopened for @${commit.agentName} with revision feedback. Agent will retry.`
+        );
+      } else if (review.revisionNote) {
+        emit('response', `DirectorBob → @${commit.agentName}: ${review.revisionNote}`);
+      }
+    }
   }
 }
 
@@ -458,29 +400,44 @@ export async function runAutonomousLoop(
 ): Promise<DirectorResult> {
 
   const emit = (type: any, message: string, data?: any) => {
-    if (onEvent) {
-      onEvent({ type, agentName: 'directorBob', taskId: 'director', message, data });
-    }
+    if (onEvent) onEvent({ type, agentName: 'directorBob', taskId: 'director', message, data });
   };
 
   emit('thinking', 'DirectorBob online. Autonomous loop starting...');
 
   const activeExecutions = new Map<string, Promise<TaskExecutionResult>>();
 
+  // Build task map for commit review context + note injection
+  const taskMap = new Map<string, AgentTask>();
+  for (const task of mission.tasks) {
+    taskMap.set(task.id, task);
+  }
+
   while (true) {
 
+    // ─── Abort ───────────────────────────────────────────────────
     if (state.aborted) {
       mission.status = 'aborted';
       saveMission(mission, cwd);
       return { mission, completed: false, aborted: true, surfacedToUser: false };
     }
 
+    // ─── Pause ───────────────────────────────────────────────────
     if (state.paused) {
       await new Promise(r => setTimeout(r, 1000));
       continue;
     }
 
+    // ─── Process pending commits when idle ───────────────────────
+    if (activeExecutions.size === 0) {
+      await handlePendingCommits(cwd, localEndpoint, taskMap, mission, onEvent);
+    }
+
+    // ─── Mission complete ─────────────────────────────────────────
     if (isMissionComplete(mission)) {
+      if (activeExecutions.size === 0) {
+        await handlePendingCommits(cwd, localEndpoint, taskMap, mission, onEvent);
+      }
       mission.status = 'completed';
       mission.completedAt = new Date().toISOString();
       saveMission(mission, cwd);
@@ -488,6 +445,7 @@ export async function runAutonomousLoop(
       return { mission, completed: true, aborted: false, surfacedToUser: false };
     }
 
+    // ─── Mission blocked ──────────────────────────────────────────
     if (isMissionBlocked(mission) && activeExecutions.size === 0) {
       mission.status = 'failed';
       saveMission(mission, cwd);
@@ -501,6 +459,7 @@ export async function runAutonomousLoop(
       };
     }
 
+    // ─── Get ready tasks ──────────────────────────────────────────
     const readyTasks = getReadyTasks(mission).filter(
       t => !activeExecutions.has(t.id)
     );
@@ -526,9 +485,7 @@ export async function runAutonomousLoop(
 
       if (state.userInjections.length > 0) {
         const injection = state.userInjections.shift();
-        if (injection) {
-          addTaskNote(mission, task.id, `Injection: ${injection}`, cwd);
-        }
+        if (injection) addTaskNote(mission, task.id, `Injection: ${injection}`, cwd);
       }
 
       const executionPromise = executeTaskAttempt(
@@ -537,7 +494,6 @@ export async function runAutonomousLoop(
         activeExecutions.delete(task.id);
 
         if (result.isDone) {
-          // ─── Track files in mission summary ──────────────────
           updateTaskResult(
             mission,
             task.id,
@@ -578,8 +534,7 @@ export async function runAutonomousLoop(
   }
 }
 
-// ─── MISSING IMPORT FIX ───────────────────────────────────────────
-// updateTaskStatus is used above but wasn't imported — add it here
+// ─── HELPERS ─────────────────────────────────────────────────────
 
 function updateTaskStatus(
   mission: AgentMission,

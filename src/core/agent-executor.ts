@@ -38,6 +38,8 @@ import {
 import { renderFileDiff } from '../ui/chat-renderer.js';
 import { STANDARD_STYLE_PROMPT } from '../ai/persona.js';
 import { loadPersonaPrompt } from '../ai/personas/persona-loader.js';
+import * as path from 'path';
+import * as fs from 'fs';
 
 // ─── INTERFACES ───────────────────────────────────────────────────
 
@@ -73,41 +75,40 @@ export interface ExecutionEvent {
   data?: any;
 }
 
+// ─── BACKUP FINDER ────────────────────────────────────────────────
+
+function findMostRecentBackup(filePath: string, cwd: string): string | null {
+  const backupDir = path.join(cwd, '.bob-backups');
+  if (!fs.existsSync(backupDir)) return null;
+  const safeName = filePath.replace(/[\/\\]/g, '_');
+  try {
+    const backups = fs.readdirSync(backupDir)
+      .filter(f => f.startsWith(safeName) && f.endsWith('.bak'))
+      .sort()
+      .reverse();
+    if (backups.length === 0) return null;
+    return path.join(backupDir, backups[0]);
+  } catch {
+    return null;
+  }
+}
+
 // ─── NORMALIZE FILE BLOCKS ────────────────────────────────────────
 
-/**
- * The local model sometimes writes // File: content as plain text
- * outside code fences — even though STANDARD_STYLE_PROMPT asks for fences.
- *
- * This function detects that pattern and wraps the content in backticks
- * so extractAllProposedFiles can find and write the files.
- *
- * This is the proven pattern from the saved agent message:
- * "// File: bin/bob.ts\nimport { themeManager }..."
- * — written as plain text, no ``` wrapper.
- */
 function normalizeFileBlocks(response: string): string {
-  // If response already has code fences with // File: — nothing to do
   if (response.match(/```[\w]*\n\/\/ File:/)) return response;
 
-  // If // File: appears as plain text (no code fence), wrap each block
   if (response.includes('// File:')) {
-    // Split on // File: boundaries
     const parts = response.split(/(\/\/ File: [^\n]+\n)/);
     let result = '';
     let i = 0;
 
     while (i < parts.length) {
       const part = parts[i];
-
-      // This is a // File: header line
       if (part.match(/^\/\/ File: [^\n]+\n$/)) {
         const fileHeader = part;
         const fileContent = parts[i + 1] || '';
         i += 2;
-
-        // Find where the file content ends — next // File: or end of string
-        // Wrap the whole block in triple backticks
         result += '```typescript\n' + fileHeader + fileContent.trimEnd() + '\n```\n';
       } else {
         result += part;
@@ -177,11 +178,9 @@ export async function executeTaskAttempt(
       .join('\n');
 
     // ─── 7. System = STANDARD_STYLE_PROMPT only ────────────────
-    // Exactly like chatWithBobStream.js passes stylePrompt as the
-    // dedicated system parameter — clean, short, no competition.
     const systemMessage = STANDARD_STYLE_PROMPT;
 
-    // ─── 8. User turn = everything else ───────────────────────
+    // ─── 8. User turn ─────────────────────────────────────────
     const directorNotes = task.notes.length > 0
       ? `\nDIRECTOR NOTES:\n${task.notes.slice(-2).join('\n')}`
       : '';
@@ -197,7 +196,9 @@ AGENT RULES:
 - Speak and act as @${agent.name}.
 - Stay focused on your assigned task.
 - Reference teammates as @name when relevant.
-- For review/audit tasks: write your findings using writeOutput — do not keep reading files indefinitely.
+- For review/audit tasks: write your findings using writeOutput.
+- Make SURGICAL changes to existing files — preserve all existing functionality.
+- Never gut or rewrite a file when a small change is needed.
 
 ${fullContext ? `--- PROJECT CONTEXT ---\n${fullContext}\n--- END CONTEXT ---\n` : ''}
 
@@ -225,29 +226,41 @@ Execute this task now: ${task.instruction}`;
         ? rawResponse.text
         : (rawResponse as unknown as string);
 
-    // ─── 10. Normalize bare // File: blocks into code fences ───
-    // The local model writes // File: as plain text without ``` fences.
-    // extractAllProposedFiles requires fences. This wraps them correctly.
+    // ─── 10. Normalize bare // File: blocks ───────────────────
     const normalizedResponse = normalizeFileBlocks(fullResponse);
 
     let allFilesCreated: string[] = [];
     let allFilesModified: string[] = [];
+    let allFilesWithBackups: Array<{
+      filePath: string;
+      backupPath: string | null;
+      isNew: boolean;
+    }> = [];
     let toolResult: ToolResult | null = null;
 
-    // ─── 11. Extract and display file proposals ────────────────
+    // ─── 11. Extract and write file proposals ──────────────────
     const proposals = extractAllProposedFiles(normalizedResponse);
 
     for (const proposed of proposals) {
       if (!proposed.isLocal) continue;
 
-      // Show file diff preview — same UI as bob chat
       renderFileDiff(proposed.filePath, proposed.content, proposed.isNew);
+
+      const backupPath = proposed.isNew
+        ? null
+        : findMostRecentBackup(proposed.filePath, cwd);
 
       if (proposed.isNew) {
         allFilesCreated.push(proposed.filePath);
       } else {
         allFilesModified.push(proposed.filePath);
       }
+
+      allFilesWithBackups.push({
+        filePath: proposed.filePath,
+        backupPath,
+        isNew: proposed.isNew,
+      });
 
       emit(
         'tool_call',
@@ -256,7 +269,7 @@ Execute this task now: ${task.instruction}`;
       );
     }
 
-    // ─── 12. Write all files — same as bob chat ────────────────
+    // Auto-approve all file writes
     await processAllProposedFiles(normalizedResponse, true);
 
     if (allFilesCreated.length > 0 || allFilesModified.length > 0) {
@@ -267,11 +280,19 @@ Execute this task now: ${task.instruction}`;
       );
     }
 
-    // ─── 13. Parse non-file action tools ──────────────────────
+    // ─── 12. Parse non-file action tools ──────────────────────
     const toolCall = parseToolCall(normalizedResponse);
     if (toolCall) {
       emit('tool_call', `@${agent.name} using tool: ${toolCall.tool}`, toolCall);
-      const executor = new AgentToolExecutor(cwd, agent.name, task.id);
+
+      const executor = new AgentToolExecutor(
+        cwd,
+        agent.name,
+        task.id,
+        mission.id,
+        allFilesWithBackups
+      );
+
       toolResult = await executor.execute(toolCall);
       emit(
         'tool_result',
@@ -282,24 +303,24 @@ Execute this task now: ${task.instruction}`;
       );
     }
 
-    // ─── 14. Clean response for display ───────────────────────
+    // ─── 13. Clean response for display ───────────────────────
     const cleanResponse = stripToolCall(fullResponse).trim();
     emit('response', cleanResponse);
 
-    // ─── 15. Persist messages ──────────────────────────────────
+    // ─── 14. Persist full raw response ────────────────────────
     const now = new Date().toISOString();
     saveAgentMessage(agent.name, { sender: 'user', content: userTurn, timestamp: now }, cwd);
     saveAgentMessage(
       agent.name,
       {
         sender: 'agent',
-        content: fullResponse, // ← save FULL raw response always
+        content: fullResponse,
         timestamp: now,
       },
       cwd
     );
 
-    // ─── 16. Accumulate files across attempts ──────────────────
+    // ─── 15. Accumulate files across attempts ──────────────────
     if (allFilesCreated.length > 0 || allFilesModified.length > 0) {
       const currentTask = mission.tasks.find(t => t.id === task.id);
       if (currentTask) {
@@ -309,7 +330,7 @@ Execute this task now: ${task.instruction}`;
       }
     }
 
-    // ─── 17. Evaluate satisfaction ─────────────────────────────
+    // ─── 16. Evaluate satisfaction ─────────────────────────────
     const filesWritten = allFilesCreated.length + allFilesModified.length;
     const satisfactionInput = [
       cleanResponse,
@@ -339,7 +360,7 @@ Execute this task now: ${task.instruction}`;
       emit('stagnating', `@${agent.name} stagnating: ${task.instruction.slice(0, 50)}`);
     }
 
-    // ─── 18. Return with accumulated file arrays ───────────────
+    // ─── 17. Return with accumulated file arrays ───────────────
     const finalTask = mission.tasks.find(t => t.id === task.id);
 
     return {

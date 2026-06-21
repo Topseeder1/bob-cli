@@ -1,85 +1,113 @@
-import { Theme } from '../themes/default';
-import EventEmitter from 'events';
+/**
+ * @fileoverview Defines interfaces and utilities for theming system-level components, 
+ * specifically focusing on standardizing console log output colors based on defined themes.
+ * 
+ * This module ensures that all colorized logging adheres to explicit contracts, 
+ * preventing ad-hoc styling throughout the codebase.
+ */
 
 /**
- * Defines the interface for a theme manager that handles state changes and event broadcasting.
+ * Represents standard ANSI color codes. 
+ * For a production system, these should ideally be managed by a dedicated terminal library, 
+ * but for simplicity and direct control, we use constants here.
  */
-export class ThemeManager extends EventEmitter {
-  private currentTheme: Readonly<typeof Theme> = Theme;
-  private readonly defaultThemesPath: string = process.cwd() + '/src/themes'; // Assumption of structure
+const Color = {
+    RESET: '\x1b[0m',
+    RED_LIGHT: '\x1b[31m', // Bright Red
+    GREEN_LIGHT: '\x1b[32m', // Green
+    BLUE_LIGHT: '\x1b[34m',  // Blue
+    YELLOW_LIGHT: '\x1b[33m' // Yellow/Info
+};
 
-  /**
-   * Initializes the ThemeManager by validating available theme contracts.
-   */
-  constructor() {
-    super();
-    // In a real system, this would dynamically discover theme modules from disk.
-    // For now, we rely on explicit imports or configuration mapping.
-    console.log("ThemeManager initialized. Current default contract loaded.");
-  }
-
-  /**
-   * Retrieves the currently active theme object contract.
-   * @returns The structured theme object.
-   */
-  public getCurrentTheme(): Readonly<typeof Theme> {
-    return this.currentTheme;
-  }
-
-  /**
-   * Switches the active theme by loading a new configuration contract.
-   * This function must implement validation and persistence of state.
-   * @param themeName The identifier for the desired theme (e.g., 'dark', 'high-contrast').
-   * @throws Error if the requested theme cannot be found or is invalid.
-   */
-  public setTheme(themeName: string):
-  {
-    // 1. Locate the Theme contract module based on name (e.g., src/themes/${themeName}.ts).
-    const dynamicThemePath = `${this.defaultThemesPath}/${themeName}`;
-
-    try {
-      // Simulate loading a module that adheres to the Theme interface.
-      // In production, this is where dynamic import magic would happen.
-      if (themeName === 'dark') { 
-        // Assume we load and validate the dark theme contract here.
-        const DarkThemeMock = { primary: "#2c3e50", secondary: "#17202b" } as unknown as typeof Theme;
-        this.currentTheme = DarkThemeMock;
-      } else if (themeName === 'high-contrast') {
-        // Simulate loading and validation.
-        const HCThemeMock = { primary: "#ffffff", secondary: "#000000" } as unknown as typeof Theme;
-        this.currentTheme = HCThemeMock;
-      } else if (themeName === 'default') {
-          // Use the already defined default contract.
-          const DefaultThemeContract = { primary: "#3498db", secondary: "#2c3e50" } as unknown as typeof Theme;
-          this.currentTheme = DefaultThemeContract;
-      } else {
-        throw new Error(`Theme '${themeName}' contract not found.`);
-      }
-
-      const previousTheme = this.getCurrentTheme(); // Capture before change for eventing
-      
-      // 2. Enforce state transition via event emission.
-      this.emit('themeChanged', { 
-        previous: previousTheme, 
-        current: this.currentTheme,
-        name: themeName
-      });
-      console.log(`Successfully switched active theme to: ${themeName}`);
-    }
-    catch (e) {
-      this.emit('themeError', e);
-      throw new Error(`Failed to set theme '${themeName}': ${(e as Error).message}`);
-    }
-  }
-
-  /**
-   * Gets the list of currently supported themes.
-   */
-  public getSupportedThemes(): string[] {
-    // This should read the directory contents, but for now, we hardcode known contracts.
-    return ['default', 'dark', 'high-contrast'];
-  }
+/**
+ * Defines the color palette structure for a given theme. 
+ * Only keys used by logging functions should be implemented.
+ */
+export interface ThemeColors {
+    success?: string;
+    error?: string;
+    info?: string;
+    warning?: string;
 }
 
-// Export a singleton instance to guarantee singular state management globally.
-export const themeManager = new ThemeManager();
+/**
+ * Global definition of available themes and their respective color contracts.
+ * This serves as the single source of truth for theme-aware logging styles.
+ */
+export const ThemePalette: Record<'light' | 'dark', ThemeColors> = {
+    /**
+     * Defines colors optimized for light mode interfaces/terminals.
+     */
+    light: {
+        success: Color.GREEN_LIGHT,
+        error: Color.RED_LIGHT,
+        info: Color.BLUE_LIGHT,
+        warning: Color.YELLOW_LIGHT,
+    },
+    /**
+     * Defines colors optimized for dark mode interfaces/terminals. 
+     * Note: Real-world implementation might require changing the color codes themselves (e.g., using lighter blues).
+     */
+    dark: {
+        success: '\x1b[32m', // Keeping standard ANSI, but mentally mapping to 'bright' on dark bg
+        error: '\x1b[91m',  // Using brighter red for contrast
+        info: '\x1b[94m',   // Brighter blue
+        warning: '\x1b[93m', // Brighter yellow
+    }
+};
+
+
+/**
+ * Applies console styling based on a theme contract.
+ * @param text The message content to log.
+ * @param colors The specific color palette derived from the current theme.
+ * @returns A string containing the colored, formatted output block (including reset).
+ */
+export function styleLog(text: string, colors: ThemeColors): string {
+    const lines = [
+        `${colors.info ? colors.info + '[INFO]': ''} ${text}`, 
+        `${colors.success ? colors.success + '[SUCCESS]': ''} ${text}`, 
+        `${colors.error ? colors.error + '[ERROR]': ''} ${text}`
+    ].filter(Boolean);
+
+    // Since we can't easily format arbitrary lines with varied styles in one go,
+    // this function returns the styled segment for flexibility.
+    return lines.join('\n');
+}
+
+
+/**
+ * Logs a message indicating success using the specified theme.
+ * @param text The success message content.
+ * @param colors The color palette to use (e.g., from ThemePalette['light']).
+ */
+export function logSuccess(text: string, colors: ThemeColors): void {
+    console.log(`${colors.success || ''}${text}${Color.RESET}`);
+}
+
+/**
+ * Logs a message indicating failure or error using the specified theme.
+ * @param text The error message content.
+ * @param colors The color palette to use (e.g., from ThemePalette['dark']).
+ */
+export function logError(text: string, colors: ThemeColors): void {
+    console.error(`${colors.error || ''}${text}${Color.RESET}`);
+}
+
+/**
+ * Logs a general informational message using the specified theme.
+ * @param text The info content.
+ * @param colors The color palette to use (e.g., from ThemePalette['light']).
+ */
+export function logInfo(text: string, colors: ThemeColors): void {
+    console.log(`${colors.info || ''}${text}${Color.RESET}`);
+}
+
+/**
+ * Retrieves the defined theme contract for a specific environment or user preference.
+ * @param themeName The name of the theme ('light' or 'dark').
+ * @returns The structured color palette, or null if the theme is undefined.
+ */
+export function getThemeContract(themeName: 'light' | 'dark'): ?ThemeColors {
+    return ThemePalette[themeName];
+}
