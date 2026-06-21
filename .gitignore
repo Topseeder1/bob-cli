@@ -8,7 +8,7 @@ dist/
 .bob-backups/
 *.bak
 
-# Environment
+# Environment — NEVER commit these
 .env
 .env.local
 .env.*
@@ -26,5 +26,9 @@ dist/
 **/agents/*/output/
 **/agents/agent-config.json
 
+# Proprietary persona files — not for public repo
+src/ai/personas/*Bob.ts
+src/ai/personas/persona-loader.ts
+
 # Bob local data
-~/.bob/
+.bob/

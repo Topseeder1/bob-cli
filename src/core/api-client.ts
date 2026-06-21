@@ -4,7 +4,10 @@ import axios from 'axios';
 import { getConfig, setConfigValue } from './config-store.js';
 import { refreshAuthToken } from '../commands/login.js';
 
-const FUNCTIONS_BASE = 'https://us-central1-seedlingapp.cloudfunctions.net';
+// ─── Cloud Functions base URL injected at build time via tsup ─────
+// Never hardcoded. Set in .env — never committed to git.
+const FUNCTIONS_BASE = process.env.FUNCTIONS_BASE
+  || 'https://us-central1-seedlingapp.cloudfunctions.net';
 
 export async function callCloudFunction(functionName: string, data: Record<string, any>): Promise<any> {
   const config = getConfig();
@@ -34,18 +37,15 @@ export async function callCloudFunction(functionName: string, data: Record<strin
       || error.message
       || `Request failed with status ${status}`;
 
-    // ─── 401: try refresh once, then give up ───
     if (status === 401 && config.refreshToken) {
       let newToken: string;
       try {
         newToken = await refreshAuthToken(config.refreshToken);
       } catch {
-        // refresh token itself is dead — only NOW log out
         setConfigValue('loggedIn', false);
         throw new Error('Session expired. Run `bob login` again.');
       }
 
-      // retry with new token
       try {
         const retry = await axios.post(
           `${FUNCTIONS_BASE}/${functionName}`,
@@ -62,33 +62,18 @@ export async function callCloudFunction(functionName: string, data: Record<strin
       } catch (retryError: any) {
         const retryStatus = retryError.response?.status;
         const retryMsg = retryError.response?.data?.error?.message || retryError.message;
-        // ─── Still 401 after fresh token = truly expired ───
         if (retryStatus === 401) {
           setConfigValue('loggedIn', false);
           throw new Error('Session expired. Run `bob login` again.');
         }
-        // ─── Any other error on retry — do NOT log out ───
         throw new Error(retryMsg);
       }
     }
 
-    // ─── 403: permission denied — do NOT log out ───
-    if (status === 403) {
-      throw new Error(serverMsg);
-    }
-
-    if (status === 404) {
-      throw new Error(`Function "${functionName}" not found. Is it deployed?`);
-    }
-
-    if (status === 500) {
-      throw new Error(`Server error: ${serverMsg}`);
-    }
-
-    if (status === 429) {
-      throw new Error('Rate limited. Please wait a moment and try again.');
-    }
-
+    if (status === 403) throw new Error(serverMsg);
+    if (status === 404) throw new Error(`Function "${functionName}" not found. Is it deployed?`);
+    if (status === 500) throw new Error(`Server error: ${serverMsg}`);
+    if (status === 429) throw new Error('Rate limited. Please wait a moment and try again.');
     if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
       throw new Error('Connection was reset. The function may still be running.');
     }
@@ -158,25 +143,13 @@ export async function callHTTPFunction(functionName: string, data: Record<string
       }
     }
 
-    if (status === 403) {
-      throw new Error(serverMsg);
-    }
-
+    if (status === 403) throw new Error(serverMsg);
     if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
       throw new Error('Connection was reset. The function may still be running — check the web app for the response.');
     }
-
-    if (status === 404) {
-      throw new Error(`Function "${functionName}" not found. Is it deployed?`);
-    }
-
-    if (status === 500) {
-      throw new Error(`Server error: ${serverMsg}`);
-    }
-
-    if (status === 429) {
-      throw new Error('Rate limited. Please wait a moment and try again.');
-    }
+    if (status === 404) throw new Error(`Function "${functionName}" not found. Is it deployed?`);
+    if (status === 500) throw new Error(`Server error: ${serverMsg}`);
+    if (status === 429) throw new Error('Rate limited. Please wait a moment and try again.');
 
     throw new Error(serverMsg);
   }

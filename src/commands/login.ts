@@ -12,7 +12,10 @@ import { setActiveConversationId } from '../core/project-map.js';
 
 const CLI_AUTH_URL = 'https://bobs-workshop.web.app/cli-auth';
 const CALLBACK_PORT = 9876;
-const FIREBASE_API_KEY = 'AIzaSyB-hUZEonRIzbExVDwuneJaDjJZBvHdIps';
+
+// ─── Firebase API key injected at build time via tsup ─────────────
+// Never hardcoded. Set in .env — never committed to git.
+const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY || '';
 
 export function registerLoginCommand(program: Command): void {
   program
@@ -123,10 +126,6 @@ export function registerLoginCommand(program: Command): void {
     });
 }
 
-/**
- * Exchanges a Firebase custom token for an ID token + refresh token
- * using the Firebase Auth REST API.
- */
 async function exchangeCustomToken(customToken: string): Promise<{ idToken: string; refreshToken: string }> {
   const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${FIREBASE_API_KEY}`;
 
@@ -145,10 +144,6 @@ async function exchangeCustomToken(customToken: string): Promise<{ idToken: stri
   };
 }
 
-/**
- * Refreshes an expired ID token using the stored refresh token.
- * Call this when a 401 is received.
- */
 export async function refreshAuthToken(refreshToken: string): Promise<string> {
   const url = `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`;
 
