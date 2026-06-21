@@ -1,11 +1,12 @@
 // File: src/commands/analyse.ts
+
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import { getConfig } from '../core/config-store.js';
 import { callCloudFunction } from '../core/api-client.js';
 import { callLocalModel, LocalChatMessage } from '../ai/providers/local.js';
-import { loadSummaries, loadDependencies, ensureProjectStructure, getProjectName } from '../core/project-map.js';
+import { loadSummaries, loadDependencies, ensureProjectStructure, getProjectName, getActiveConversationId } from '../core/project-map.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -50,7 +51,6 @@ export function registerAnalyseCommand(program: Command): void {
     }) => {
       const config = getConfig();
 
-      // ─── AUTO-FIX MODE ───
       if (options.auto) {
         const { runAutoFix } = await import('./analyse-auto.js');
         const category = options.bugs ? 'bugs' : options.features ? 'features' : options.improvements ? 'improvements' : options.upgrades ? 'upgrades' : undefined;
@@ -62,7 +62,6 @@ export function registerAnalyseCommand(program: Command): void {
         return;
       }
 
-      // ─── RESULTS: Interactive list view ───
       if (options.bugs || options.features || options.improvements || options.upgrades) {
         const { showInteractiveResults } = await import('./analyse-results.js');
         const category = options.bugs ? 'bugs' : options.features ? 'features' : options.improvements ? 'improvements' : 'upgrades';
@@ -70,32 +69,20 @@ export function registerAnalyseCommand(program: Command): void {
         return;
       }
 
-      // ─── RESULTS: Dashboard ───
       if (options.results) {
         await showDashboard();
         return;
       }
 
-      // ─── STATUS ───
       if (options.status) {
         await showStatus(config);
         return;
       }
 
-      // ─── RUN ANALYSIS ───
       await runAnalysis(config);
     });
 }
 
-// ═══════════════════════════════════════════════════════════
-// ANALYSIS PROVIDER ROUTER
-// ═══════════════════════════════════════════════════════════
-
-/**
- * Routes the analysis LLM call through the user's configured provider.
- * - Local: calls Ollama directly (free, no backend)
- * - Platform: calls cliAnalyseFile Cloud Function (lightweight, no side effects)
- */
 async function callAnalysisProvider(config: any, messages: LocalChatMessage[]): Promise<string> {
   const provider = config.provider || 'local';
 
@@ -110,7 +97,6 @@ async function callAnalysisProvider(config: any, messages: LocalChatMessage[]): 
     return response as unknown as string;
   }
 
-  // ─── PLATFORM PROVIDERS: Call lightweight cliAnalyseFile ───
   if (!config.loggedIn || !config.authToken) {
     throw new Error('Provider requires authentication. Run `bob login` first.');
   }
@@ -125,10 +111,6 @@ async function callAnalysisProvider(config: any, messages: LocalChatMessage[]): 
 
   return result?.text || '';
 }
-
-// ═══════════════════════════════════════════════════════════
-// DASHBOARD
-// ═══════════════════════════════════════════════════════════
 
 const DASH_WIDTH = 62;
 
@@ -167,8 +149,6 @@ async function showDashboard(): Promise<void> {
 
 export function renderAnalysisDashboard(counts: { bugs: number; features: number; improvements: number; upgrades: number }): void {
   const total = counts.bugs + counts.features + counts.improvements + counts.upgrades;
-
-  // Calculate completion (addressed vs total found)
   const addressed = loadAddressedCount();
   const totalFound = total + addressed;
   const completionPercent = totalFound === 0 ? 100 : Math.round((addressed / totalFound) * 100);
@@ -179,7 +159,6 @@ export function renderAnalysisDashboard(counts: { bugs: number; features: number
   console.log(midRule());
   console.log(row(''));
 
-  // ─── 4-COLUMN GRID ───
   const bugLabel = ERROR(`  🔴 BUGS`);
   const featLabel = MODE_CONSULTANT(`  🟣 FEATURES`);
   const imprLabel = INFO(`  🔵 IMPROVEMENTS`);
@@ -196,7 +175,6 @@ export function renderAnalysisDashboard(counts: { bugs: number; features: number
   console.log(row(bugCount + '          ' + featCount + '          ' + imprCount + '          ' + upgrCount));
   console.log(row(''));
 
-  // ─── PROGRESS BAR (Completion) ───
   const barWidth = 50;
   const filled = Math.round((completionPercent / 100) * barWidth);
   const empty = barWidth - filled;
@@ -214,7 +192,6 @@ export function renderAnalysisDashboard(counts: { bugs: number; features: number
   console.log(row(''));
   console.log(botRule());
 
-  // ─── COMMANDS ───
   console.log('');
   console.log(MUTED('  View details (interactive):'));
   console.log(MUTED('    ▸ bob analyse --bugs'));
@@ -229,12 +206,11 @@ export function renderAnalysisDashboard(counts: { bugs: number; features: number
   console.log('');
 }
 
-// ═══════════════════════════════════════════════════════════
-// STATUS
-// ═══════════════════════════════════════════════════════════
-
 async function showStatus(config: any): Promise<void> {
-  if (!config.loggedIn || !config.authToken || !config.conversationId) {
+  // ─── Read conversation ID from project scope ───
+  const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
+
+  if (!config.loggedIn || !config.authToken || !conversationId) {
     console.log('');
     console.log(WARNING('  ⚠️  Status check requires Tier 3 with an active conversation.'));
     console.log('');
@@ -245,7 +221,7 @@ async function showStatus(config: any): Promise<void> {
 
   try {
     const result = await callCloudFunction('getCLIAnalysisResults', {
-      conversationId: config.conversationId,
+      conversationId,
       action: 'status',
     });
 
@@ -280,10 +256,6 @@ async function showStatus(config: any): Promise<void> {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// RUN ANALYSIS
-// ═══════════════════════════════════════════════════════════
-
 async function runAnalysis(config: any): Promise<void> {
   const cwd = process.cwd();
   const projectName = getProjectName(cwd);
@@ -294,7 +266,6 @@ async function runAnalysis(config: any): Promise<void> {
   console.log(MUTED('  ─────────────────────────────────────'));
   console.log('');
 
-  // ─── VERIFY PROVIDER IS AVAILABLE ───
   const provider = config.provider || 'local';
 
   if (provider === 'local' && !config.localEndpoint) {
@@ -313,7 +284,6 @@ async function runAnalysis(config: any): Promise<void> {
     return;
   }
 
-  // ─── VERIFY PROJECT IS INDEXED ───
   const summaries = loadSummaries(cwd);
   if (!summaries || Object.keys(summaries).length === 0) {
     console.log(WARNING('  ⚠️  Project not indexed. Run `bob index` first.'));
@@ -420,7 +390,6 @@ ${content}`;
     completed++;
   }
 
-  // Save results
   fs.writeFileSync(path.join(resultsDir, 'analysis.json'), JSON.stringify(allResults, null, 2));
 
   let totalBugs = 0, totalFeatures = 0, totalImprovements = 0, totalUpgrades = 0;
@@ -447,10 +416,6 @@ ${content}`;
   console.log(MUTED('  Run `bob analyse --auto` for auto-fix mode.'));
   console.log('');
 }
-
-// ═══════════════════════════════════════════════════════════
-// HELPERS
-// ═══════════════════════════════════════════════════════════
 
 function loadLocalCounts(): any {
   const cwd = process.cwd();

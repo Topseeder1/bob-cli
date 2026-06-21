@@ -1,10 +1,12 @@
 // File: src/commands/conversations.ts
+
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import * as readline from 'readline';
 import { getConfig, setConfigValue } from '../core/config-store.js';
 import { callCloudFunction } from '../core/api-client.js';
+import { setActiveConversationId } from '../core/project-map.js';
 
 // ─── DESIGN TOKENS ───
 const BRAND_PRIMARY = chalk.hex('#E66F24');
@@ -152,6 +154,9 @@ export function registerConversationsCommand(program: Command): void {
         }
 
         const selected = conversations[selection - 1];
+
+        // ─── Write to both project scope AND global config ───────
+        setActiveConversationId(selected.id, process.cwd());
         setConfigValue('conversationId', selected.id);
 
         console.log('');
@@ -174,7 +179,6 @@ export function registerConversationsCommand(program: Command): void {
 // ═══════════════════════════════════════════════════════════
 
 function renderConversationList(conversations: any[], activeConvoId: string | undefined, search: string | undefined, result: any, isJoinMode: boolean = false): void {
-  // ─── GROUP BY TIME ───
   const groups = groupByTime(conversations);
 
   console.log('');
@@ -186,8 +190,6 @@ function renderConversationList(conversations: any[], activeConvoId: string | un
 
   console.log(MUTED('  ─────────────────────────────────────────────────────────────────'));
   console.log('');
-
-  // ─── COLUMN HEADER ───
   console.log(MUTED('       #   Title                                  Source  Time     Meta'));
   console.log(MUTED('  ─────────────────────────────────────────────────────────────────'));
 
@@ -196,7 +198,6 @@ function renderConversationList(conversations: any[], activeConvoId: string | un
   for (const group of groups) {
     if (group.conversations.length === 0) continue;
 
-    // ─── GROUP LABEL ───
     console.log('');
     console.log(BRAND_SECONDARY(`  ┌─ ${group.label}`));
     console.log('');
@@ -211,7 +212,6 @@ function renderConversationList(conversations: any[], activeConvoId: string | un
   console.log('');
   console.log(MUTED('  ─────────────────────────────────────────────────────────────────'));
 
-  // Pagination
   if (result.totalPages && result.totalPages > 1) {
     console.log(MUTED(`  Page ${result.page}/${result.totalPages}`));
     if (result.page < result.totalPages) {
@@ -219,7 +219,6 @@ function renderConversationList(conversations: any[], activeConvoId: string | un
     }
   }
 
-  // Commands
   if (!isJoinMode) {
     console.log('');
     console.log(MUTED('  ▸ bob conversations join    — Pick a conversation to continue'));
@@ -236,18 +235,15 @@ function renderConversationTile(convo: any, index: number, isActive: boolean): v
   const title = (convo.title || 'Untitled').slice(0, 38);
   const paddedTitle = title + (title.length < 38 ? ' '.repeat(38 - title.length) : '');
 
-  // ─── META INDICATORS ───
   const msgCount = convo.messageCount ? MUTED(`${convo.messageCount}💬`) : '';
   const forkCount = convo.forkCount ? BRAND_SECONDARY(`${convo.forkCount}🍴`) : '';
   const projectIcon = convo.hasProject ? SUCCESS('📁') : '';
   const meta = [msgCount, forkCount, projectIcon].filter(Boolean).join(' ');
 
-  // ─── ACTIVE INDICATOR ───
   const indicator = isActive ? ACTIVE_INDICATOR : '  ';
   const numStr = INFO(String(index).padStart(2));
   const timeStr = MUTED(timeAgo.padEnd(8));
 
-  // ─── COMPOSE LINE ───
   const line = `  ${indicator} ${numStr}. ${modeIcon} ${chalk.white(paddedTitle)} ${sourceIcon}  ${timeStr} ${meta}`;
 
   if (isActive) {
@@ -279,7 +275,7 @@ function groupByTime(conversations: any[]): TimeGroup[] {
 
     if (diffHours < 24) {
       today.push(convo);
-    } else if (diffHours < 168) { // 7 days
+    } else if (diffHours < 168) {
       thisWeek.push(convo);
     } else {
       older.push(convo);

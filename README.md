@@ -7,7 +7,6 @@
 [![npm version](https://img.shields.io/npm/v/@bobsworkshop/cli)](https://www.npmjs.com/package/@bobsworkshop/cli)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![version](https://img.shields.io/badge/version-0.7.0-orange)](https://www.npmjs.com/package/@bobsworkshop/cli)
 
 **Bob's CLI** is a locally-installed developer tool that provides a senior-level AI engineering partner directly inside your native terminal. Stay in your development environment. Never switch to a browser. Ship faster.
 
@@ -20,6 +19,7 @@
 *Built by [Bob's Workshop](https://bobs-workshop.web.app) — A Seedling Company*
 
 </div>
+
 
 ---
 

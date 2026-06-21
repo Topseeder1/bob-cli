@@ -1,6 +1,6 @@
 {
   "name": "@bobsworkshop/cli",
-  "version": "0.7.0",
+  "version": "0.7.2",
   "description": "Bob's CLI — AI coding assistant and Forge orchestrator",
   "type": "module",
   "files": [

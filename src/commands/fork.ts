@@ -1,8 +1,11 @@
+// File: src/commands/fork.ts
+
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getConfig, setConfigValue } from '../core/config-store.js';
 import { callCloudFunction } from '../core/api-client.js';
 import { startForkAnimation } from '../ui/animations/fork-split.js';
+import { getActiveConversationId, setActiveConversationId } from '../core/project-map.js';
 
 // ─── DESIGN TOKENS ───
 const BRAND_PRIMARY = chalk.hex('#E66F24');
@@ -29,15 +32,15 @@ export function registerForkCommand(program: Command): void {
         return;
       }
 
-      if (!config.conversationId) {
+      // ─── Read conversation ID from project scope ───
+      const parentConvoId = getActiveConversationId(process.cwd()) || config.conversationId;
+      if (!parentConvoId) {
         console.log('');
         console.log(ERROR('  ❌ No active conversation to fork from.'));
         console.log(MUTED('  Start a conversation first with `bob chat`, or join one with `bob conversations join`.'));
         console.log('');
         return;
       }
-
-      const parentConvoId = config.conversationId;
 
       console.log('');
       console.log(chalk.bold(MODE_CONSULTANT(`  ⚡ Forking: "${title}"`)));
@@ -59,6 +62,8 @@ export function registerForkCommand(program: Command): void {
         await new Promise(resolve => setTimeout(resolve, 200));
 
         if (result?.conversationId) {
+          // ─── Write fork's new ID to project scope ───
+          setActiveConversationId(result.conversationId, process.cwd());
           setConfigValue('conversationId', result.conversationId);
 
           console.log('');
@@ -114,7 +119,9 @@ export function registerForkCommand(program: Command): void {
         return;
       }
 
-      if (!config.conversationId) {
+      // ─── Read conversation ID from project scope ───
+      const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
+      if (!conversationId) {
         console.log('');
         console.log(ERROR('  ❌ No active conversation.'));
         console.log('');
@@ -125,9 +132,7 @@ export function registerForkCommand(program: Command): void {
       console.log(chalk.bold(MODE_CONSULTANT('  🔀 Loading forks...')));
 
       try {
-        const result = await callCloudFunction('listConversationForks', {
-          conversationId: config.conversationId,
-        });
+        const result = await callCloudFunction('listConversationForks', { conversationId });
 
         const forks = result.forks || [];
 

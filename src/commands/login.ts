@@ -1,4 +1,5 @@
 // File: src/commands/login.ts
+
 import { Command } from 'commander';
 import chalk from 'chalk';
 import http from 'http';
@@ -7,6 +8,7 @@ import axios from 'axios';
 import { URL } from 'url';
 import * as readline from 'readline';
 import { setConfigValue } from '../core/config-store.js';
+import { setActiveConversationId } from '../core/project-map.js';
 
 const CLI_AUTH_URL = 'https://bobs-workshop.web.app/cli-auth';
 const CALLBACK_PORT = 9876;
@@ -79,7 +81,6 @@ export function registerLoginCommand(program: Command): void {
         const result = await startAuthFlow();
 
         if (result) {
-          // Exchange custom token for ID token
           const exchangeResult = await exchangeCustomToken(result.token);
 
           setConfigValue('authToken', exchangeResult.idToken);
@@ -111,6 +112,10 @@ export function registerLoginCommand(program: Command): void {
       setConfigValue('uid', null);
       setConfigValue('loggedIn', false);
       setConfigValue('tier', 'local');
+      setConfigValue('conversationId', null);
+
+      // ─── Clear project-scoped conversation ID on logout ───
+      setActiveConversationId('', process.cwd());
 
       console.log('');
       console.log(chalk.gray('  👋 Logged out. Switched to Tier 1 (local-first).'));
@@ -156,7 +161,6 @@ export async function refreshAuthToken(refreshToken: string): Promise<string> {
     throw new Error('Token refresh failed.');
   }
 
-  // Update stored token
   setConfigValue('authToken', response.data.id_token);
 
   return response.data.id_token;

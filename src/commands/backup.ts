@@ -1,4 +1,6 @@
- // TEST RESTORE COMMENT
+// File: src/commands/backup.ts
+
+// TEST RESTORE COMMENT
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
@@ -10,6 +12,10 @@ import axios from 'axios';
 import inquirer from 'inquirer';
 import { getConfig } from '../core/config-store.js';
 import { callCloudFunction } from '../core/api-client.js';
+
+// backup.ts does NOT manage conversationId — no changes needed here.
+// It uses getCurrentProjectName() from process.cwd() for project scoping.
+// conversationId is not used in any backup operation.
 
 const BRAND = chalk.hex('#E66F24');
 const CYAN = chalk.cyan;
@@ -334,8 +340,6 @@ async function runSourceBackup(options: {
     const tar = await import('tar');
 
     if (isFileMode) {
-      // ─── Preserve relative path structure from project root ───
-      // This ensures extract restores to the correct location
       const relativeFilePath = path.normalize(filePath!).replace(/\\/g, '/');
       await tar.create(
         { gzip: true, file: archivePath, cwd: projectDir },
@@ -445,7 +449,6 @@ export function registerBackupCommand(program: Command): void {
     .command('backup')
     .description('Encrypt and upload your Bob CLI data to secure cloud storage');
 
-  // ── bob backup create ─────────────────────────────────────────
   backupCmd
     .command('create')
     .description('Create a new encrypted backup')
@@ -498,7 +501,6 @@ export function registerBackupCommand(program: Command): void {
       });
     });
 
-  // ── bob backup list ───────────────────────────────────────────
   backupCmd
     .command('list')
     .description('List all backup revisions and named archives')
@@ -588,7 +590,6 @@ export function registerBackupCommand(program: Command): void {
       }
     });
 
-  // ── bob backup restore ────────────────────────────────────────
   backupCmd
     .command('restore')
     .description('Restore from a backup revision or named archive')
@@ -715,20 +716,13 @@ export function registerBackupCommand(program: Command): void {
       const decryptedPath = path.join(tmpDir, 'bob-backup.tar.gz');
 
       try {
-        const dlSpinner = ora({
-          text: GRAY(`  Downloading ${label} ...`),
-          spinner: 'dots',
-        }).start();
+        const dlSpinner = ora({ text: GRAY(`  Downloading ${label} ...`), spinner: 'dots' }).start();
 
         let downloadAction: string;
         if (isSource) {
-          downloadAction = selected.type === 'archive'
-            ? 'requestSourceArchiveDownload'
-            : 'requestSourceDownload';
+          downloadAction = selected.type === 'archive' ? 'requestSourceArchiveDownload' : 'requestSourceDownload';
         } else {
-          downloadAction = selected.type === 'archive'
-            ? 'requestArchiveDownload'
-            : 'requestDownload';
+          downloadAction = selected.type === 'archive' ? 'requestArchiveDownload' : 'requestDownload';
         }
 
         const downloadResult = await callCloudFunction('cliBackupLicense', {
@@ -753,10 +747,7 @@ export function registerBackupCommand(program: Command): void {
         decrypt(downloadPath, decryptedPath, config.uid!);
         decryptSpinner.succeed(GREEN('  Decrypting ...'));
 
-        const backupSpinner = ora({
-          text: GRAY('  Backing up current state ...'),
-          spinner: 'dots',
-        }).start();
+        const backupSpinner = ora({ text: GRAY('  Backing up current state ...'), spinner: 'dots' }).start();
 
         let preRestoreBackup: string;
 
@@ -775,35 +766,24 @@ export function registerBackupCommand(program: Command): void {
             fs.cpSync(projectDir, preRestoreBackup, { recursive: true });
           }
         } else {
-          const restoreTarget = isGlobal
-            ? BOB_DIR
-            : getProjectBackupDir(projectName);
+          const restoreTarget = isGlobal ? BOB_DIR : getProjectBackupDir(projectName);
           preRestoreBackup = `${restoreTarget}-pre-restore-${Date.now()}`;
           if (fs.existsSync(restoreTarget)) {
             fs.cpSync(restoreTarget, preRestoreBackup, { recursive: true });
           }
         }
 
-        backupSpinner.succeed(
-          GREEN('  Backing up current state ...') +
-          GRAY(` → ${path.basename(preRestoreBackup)}`)
-        );
+        backupSpinner.succeed(GREEN('  Backing up current state ...') + GRAY(` → ${path.basename(preRestoreBackup)}`));
 
         const extractSpinner = ora({ text: GRAY('  Extracting ...'), spinner: 'dots' }).start();
         const tar = await import('tar');
 
         if (isSource && filePath) {
-          // ─── Single file: extract to project root ───────────
-          // Archive was created with projectDir as cwd and relative
-          // path preserved — so extracting to projectDir restores
-          // the file to its correct location.
           await tar.extract({ file: decryptedPath, cwd: projectDir });
         } else if (isSource) {
-          // ─── Full source: extract to parent of project dir ──
           const parentDir = path.dirname(projectDir);
           await tar.extract({ file: decryptedPath, cwd: parentDir });
         } else {
-          // ─── Context backup: extract to home dir ────────────
           await tar.extract({ file: decryptedPath, cwd: os.homedir() });
         }
 
@@ -836,7 +816,6 @@ export function registerBackupCommand(program: Command): void {
       }
     });
 
-  // ── bob backup (default) ──────────────────────────────────────
   backupCmd.action(async () => {
     const config = getConfig();
     if (!requireAuth(config)) return;

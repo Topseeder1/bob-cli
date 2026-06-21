@@ -1,9 +1,11 @@
 // File: src/commands/command-center.ts
+
 import { Command } from 'commander';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
 import { getConfig } from '../core/config-store.js';
 import { callCloudFunction, isAuthenticated } from '../core/api-client.js';
+import { getActiveConversationId } from '../core/project-map.js';
 
 // ─── DESIGN TOKENS ───
 const ORANGE  = chalk.hex('#E66F24');
@@ -18,7 +20,6 @@ const GRAY    = chalk.gray;
 const WHITE   = chalk.white;
 const BORDER  = chalk.hex('#455A64');
 
-// ─── STATUS COLORS ───
 function statusColor(status: string): chalk.Chalk {
   switch (status) {
     case 'queued':            return GRAY;
@@ -83,7 +84,6 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
-// ─── RENDER STATS BAR ───
 function renderStats(stats: any): void {
   console.log('');
   console.log(BORDER('  ─── COMMAND CENTER ──────────────────────────────────────────'));
@@ -99,7 +99,6 @@ function renderStats(stats: any): void {
   console.log('');
 }
 
-// ─── RENDER TASK DETAIL ───
 function renderTaskDetail(task: any): void {
   const catColor = categoryColor(task.request.category);
   const confColor = confidenceColor(task.request.confidence);
@@ -171,7 +170,6 @@ function renderTaskDetail(task: any): void {
   console.log('');
 }
 
-// ─── DECISION STREAM MODE ───
 async function runDecisionStream(conversationId: string): Promise<void> {
   console.log('');
   console.log(ORANGE('  ─── DECISION STREAM ─────────────────────────────────────────'));
@@ -213,10 +211,7 @@ async function runDecisionStream(conversationId: string): Promise<void> {
   }
 }
 
-// ─── SETTINGS MODE ───
-// ─── SETTINGS MODE ───
 async function runSettings(conversationId: string): Promise<void> {
-  // Fetch current settings
   let response: any;
   try {
     response = await callCloudFunction('getCLIAutonomousTasks', { conversationId });
@@ -272,7 +267,6 @@ async function runSettings(conversationId: string): Promise<void> {
     }
   }
 
-  // Save via CF
   try {
     await callCloudFunction('updateCLIAutonomySettings', {
       conversationId,
@@ -289,13 +283,10 @@ async function runSettings(conversationId: string): Promise<void> {
   console.log('');
 }
 
-// ─── MAIN TASK BOARD ───
-// ─── MAIN TASK BOARD ───
 async function runTaskBoard(conversationId: string): Promise<void> {
   let continueLoop = true;
 
   while (continueLoop) {
-    // Fetch tasks
     let response: any;
     try {
       response = await callCloudFunction('getCLIAutonomousTasks', { conversationId });
@@ -316,7 +307,6 @@ async function runTaskBoard(conversationId: string): Promise<void> {
       return;
     }
 
-    // ─── DEDUPLICATE — keep only most recent per unique description ───
     const seen = new Map<string, any>();
     for (const task of tasks) {
       const key = task.request.description.slice(0, 80);
@@ -326,7 +316,6 @@ async function runTaskBoard(conversationId: string): Promise<void> {
     }
     const dedupedTasks = Array.from(seen.values());
 
-    // ─── BUILD CHOICES ───
     const taskChoices = dedupedTasks.map((task: any) => {
       const sColor = statusColor(task.outcome.status);
       const catColor = categoryColor(task.request.category);
@@ -340,7 +329,6 @@ async function runTaskBoard(conversationId: string): Promise<void> {
       };
     });
 
-    // ─── FOOTER OPTIONS (no Separator — causes re-render flicker) ───
     taskChoices.push({
       name: BORDER('  ────────────────────────────────────────────────────────'),
       value: '__separator__',
@@ -363,20 +351,16 @@ async function runTaskBoard(conversationId: string): Promise<void> {
       }
     ]);
 
-    // ─── EXIT / SEPARATOR GUARDS ───
     if (selectedTaskId === '__exit__' || selectedTaskId === '__separator__') {
       continueLoop = false;
       break;
     }
 
-    // ─── FIND SELECTED TASK ───
     const selectedTask = dedupedTasks.find((t: any) => t.id === selectedTaskId);
     if (!selectedTask) continue;
 
-    // ─── RENDER FULL DETAIL ───
     renderTaskDetail(selectedTask);
 
-    // ─── BUILD ACTIONS ───
     const actions: any[] = [];
 
     if (selectedTask.outcome.status === 'awaiting_approval') {
@@ -396,7 +380,6 @@ async function runTaskBoard(conversationId: string): Promise<void> {
       }
     ]);
 
-    // ─── APPROVE ───
     if (action === 'approve') {
       const { confirmed } = await inquirer.prompt([
         {
@@ -412,18 +395,15 @@ async function runTaskBoard(conversationId: string): Promise<void> {
         console.log(ORANGE('  ─── EXECUTION STREAM ────────────────────────────────────────'));
         console.log(GRAY('  Mini Bob is executing. Streaming live logs...\n'));
 
-        // Fire approval without blocking
         callCloudFunction('approveAutonomousTask', {
           conversationId,
           taskId: selectedTask.id,
           action: 'approve',
         }).then(() => {
-          // CF returned — task complete
         }).catch((e: any) => {
           console.log(RED(`\n  ❌ Execution error: ${e.message}`));
         });
 
-        // Poll execution log in real time
         let running = true;
         let seenLogIds = new Set<string>();
         let pollErrors = 0;
@@ -440,21 +420,18 @@ async function runTaskBoard(conversationId: string): Promise<void> {
           await new Promise(r => setTimeout(r, 2000));
 
           try {
-            // Poll task status
             const taskResponse = await callCloudFunction('getCLIAutonomousTasks', {
               conversationId,
               statusFilter: null,
             });
             const updatedTask = taskResponse?.tasks?.find((t: any) => t.id === selectedTask.id);
 
-            // Poll execution log
             const logResponse = await callCloudFunction('getCLITaskExecutionLog', {
               conversationId,
               taskId: selectedTask.id,
             });
             const logEntries: any[] = logResponse?.entries || [];
 
-            // Render new log entries
             for (const entry of logEntries) {
               if (seenLogIds.has(entry.id)) continue;
               seenLogIds.add(entry.id);
@@ -475,7 +452,6 @@ async function runTaskBoard(conversationId: string): Promise<void> {
               console.log(prefix + WHITE(entry.text));
             }
 
-            // Check terminal states
             if (updatedTask) {
               const status = updatedTask.outcome.status;
 
@@ -536,7 +512,6 @@ async function runTaskBoard(conversationId: string): Promise<void> {
         console.log('');
       }
 
-    // ─── DENY ───
     } else if (action === 'deny') {
       const { reason } = await inquirer.prompt([
         {
@@ -562,16 +537,13 @@ async function runTaskBoard(conversationId: string): Promise<void> {
         console.log(RED(`  ❌ Failed to deny: ${e.message}`));
       }
 
-    // ─── EXIT ───
     } else if (action === 'exit') {
       continueLoop = false;
       break;
     }
-    // 'back' falls through — re-renders the task list
   }
 }
 
-// ─── REGISTER COMMAND ───
 export function registerCommandCenterCommand(program: Command): void {
   program
     .command('command-center')
@@ -590,7 +562,9 @@ export function registerCommandCenterCommand(program: Command): void {
       }
 
       const config = getConfig();
-      const conversationId = config.conversationId;
+
+      // ─── Read conversation ID from project scope ───
+      const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
 
       if (!conversationId) {
         console.log('');
@@ -615,7 +589,7 @@ export function registerCommandCenterCommand(program: Command): void {
         await runSettings(conversationId);
         return;
       }
-
+hmmm wtf...so we probably should update that file as well yes?
       await runTaskBoard(conversationId);
     });
 }

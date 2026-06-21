@@ -7,6 +7,7 @@ import * as readline from 'readline';
 import { getConfig, setConfigValue } from '../core/config-store.js';
 import { callCloudFunction } from '../core/api-client.js';
 import { renderMarkdown } from '../ui/renderer.js';
+import { setActiveConversationId } from '../core/project-map.js';
 
 // ─── DESIGN TOKENS ───
 const BRAND_PRIMARY = chalk.hex('#E66F24');
@@ -52,25 +53,21 @@ export function registerRemoteCommand(program: Command): void {
         return;
       }
 
-      // ─── DISCOVER / CONNECT ───
       if (options.new || !config.conversationId) {
         await discoverAndConnect(config);
         return;
       }
 
-      // ─── INTERACTIVE MODE ───
       if (options.interactive || (!type && !options.new)) {
         await runInteractiveRemote(config, options.session);
         return;
       }
 
-      // ─── STATUS ───
       if (!type) {
         await showConnectionStatus(config);
         return;
       }
 
-      // ─── DISPATCH ───
       const validTypes = [
         'chat', 'consult', 'index', 'analyse',
         'push', 'autonomy', 'backup', 'restore',
@@ -102,10 +99,6 @@ export function registerRemoteCommand(program: Command): void {
       await dispatchCommand(config, type, payload, options.session);
     });
 }
-
-// ═══════════════════════════════════════════════════════════
-// INTERACTIVE REMOTE SESSION
-// ═══════════════════════════════════════════════════════════
 
 async function runInteractiveRemote(config: any, targetSession?: string): Promise<void> {
   const spinner = ora({ text: INFO('  Connecting to Active Bob...'), spinner: 'dots' }).start();
@@ -165,7 +158,6 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
       const trimmed = input.trim();
       if (!trimmed) { prompt(); return; }
 
-      // ─── /exit ───
       if (trimmed === '/exit' || trimmed === '/quit') {
         console.log('');
         console.log(MUTED('  📡 Disconnected from remote session.'));
@@ -174,41 +166,30 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
         return;
       }
 
-      // ─── /consult "message" ───
       if (trimmed.startsWith('/consult ')) {
         const msg = trimmed.slice(9).trim().replace(/^["']|["']$/g, '');
-        if (msg) {
-          await dispatchAndShow(config, 'consult', { message: msg }, targetSession);
-        } else {
-          console.log(ERROR('  ❌ Provide a message: /consult "your question"'));
-        }
+        if (msg) { await dispatchAndShow(config, 'consult', { message: msg }, targetSession); }
+        else { console.log(ERROR('  ❌ Provide a message: /consult "your question"')); }
         prompt(); return;
       }
 
-      // ─── /push "message" ───
       if (trimmed.startsWith('/push ')) {
         const msg = trimmed.slice(6).trim().replace(/^["']|["']$/g, '');
-        if (msg) {
-          await dispatchAndShow(config, 'push', { message: msg }, targetSession);
-        } else {
-          console.log(ERROR('  ❌ Provide a commit message: /push "your message"'));
-        }
+        if (msg) { await dispatchAndShow(config, 'push', { message: msg }, targetSession); }
+        else { console.log(ERROR('  ❌ Provide a commit message: /push "your message"')); }
         prompt(); return;
       }
 
-      // ─── /index ───
       if (trimmed === '/index') {
         await dispatchAndShow(config, 'index', {}, targetSession);
         prompt(); return;
       }
 
-      // ─── /analyse ───
       if (trimmed === '/analyse' || trimmed === '/analyze') {
         await dispatchAndShow(config, 'analyse', {}, targetSession);
         prompt(); return;
       }
 
-      // ─── /backup [source|global] ───
       if (trimmed.startsWith('/backup')) {
         const parts = trimmed.split(' ');
         const flag = parts[1]?.toLowerCase();
@@ -219,7 +200,6 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
         prompt(); return;
       }
 
-      // ─── /restore [source|global] ───
       if (trimmed.startsWith('/restore')) {
         const parts = trimmed.split(' ');
         const flag = parts[1]?.toLowerCase();
@@ -230,7 +210,6 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
         prompt(); return;
       }
 
-      // ─── Default: chat message ───
       await dispatchAndShow(config, 'chat', { message: trimmed }, targetSession);
       prompt();
     });
@@ -239,19 +218,14 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
   prompt();
 }
 
-async function dispatchAndShow(
-  config: any,
-  type: string,
-  payload: any,
-  targetSession?: string
-): Promise<void> {
+async function dispatchAndShow(config: any, type: string, payload: any, targetSession?: string): Promise<void> {
   const spinner = ora({
     text: BRAND_SECONDARY(`  📡 Active Bob executing: ${type}...`),
     spinner: 'dots',
   }).start();
 
   let pollCount = 0;
-  const MAX_POLLS = 300; // 10 minutes at 2s intervals
+  const MAX_POLLS = 300;
 
   try {
     const result = await callCloudFunction('sendRemoteCommand', {
@@ -287,9 +261,7 @@ async function dispatchAndShow(
             console.log(MUTED('  ───────────────────────────────────────'));
             console.log(chalk.bold(INFO('  🤖 Bob (Remote):')));
             console.log('');
-            for (const line of rendered.split('\n')) {
-              console.log(`  ${line}`);
-            }
+            for (const line of rendered.split('\n')) { console.log(`  ${line}`); }
             console.log('');
             if (pollResult.result?.referencedFiles?.length > 0) {
               console.log(MUTED(`  └─ 📂 Referenced: ${pollResult.result.referencedFiles.join(', ')}`));
@@ -298,14 +270,10 @@ async function dispatchAndShow(
           } else if (pollResult.result?.message) {
             console.log('');
             console.log(SUCCESS(`  ✅ ${pollResult.result.message}`));
-
-            // ─── Show analysis counts if available ───────────
             if (pollResult.result?.counts) {
               const c = pollResult.result.counts;
               console.log(MUTED(`     🐛 ${c.bugs} bugs  ⭐ ${c.features} features  🔧 ${c.improvements} improvements  ⬆️ ${c.upgrades} upgrades`));
             }
-
-            // ─── Show backup details if available ───────────
             if (pollResult.result?.sizeBytes) {
               const sizeLabel = pollResult.result.sizeBytes < 1024 * 1024
                 ? `${(pollResult.result.sizeBytes / 1024).toFixed(1)} KB`
@@ -329,12 +297,11 @@ async function dispatchAndShow(
           return;
         }
 
-      } catch { /* keep polling */ }
+      } catch { }
 
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
 
-    // Timeout
     spinner.stop();
     console.log('');
     console.log(WARNING('  ⚠️  Command timed out after 10 minutes.'));
@@ -348,10 +315,6 @@ async function dispatchAndShow(
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// STATUS
-// ═══════════════════════════════════════════════════════════
-
 async function showConnectionStatus(config: any): Promise<void> {
   if (!config.conversationId) {
     console.log('');
@@ -364,10 +327,7 @@ async function showConnectionStatus(config: any): Promise<void> {
   const spinner = ora({ text: INFO('  Checking Active Bob status...'), spinner: 'dots' }).start();
 
   try {
-    const result = await callCloudFunction('listActiveBobs', {
-      conversationId: config.conversationId,
-    });
-
+    const result = await callCloudFunction('listActiveBobs', { conversationId: config.conversationId });
     spinner.stop();
     const sessions = result?.sessions || [];
     const activeSessions = sessions.filter((s: any) => s.active);
@@ -416,10 +376,6 @@ async function showConnectionStatus(config: any): Promise<void> {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// DISCOVER AND CONNECT
-// ═══════════════════════════════════════════════════════════
-
 async function discoverAndConnect(config: any): Promise<void> {
   const spinner = ora({ text: INFO('  Searching for Active Bobs...'), spinner: 'dots' }).start();
 
@@ -465,6 +421,9 @@ async function discoverAndConnect(config: any): Promise<void> {
     }
 
     const selected = bobs[selection - 1];
+
+    // ─── Write to both project scope AND global config ───
+    setActiveConversationId(selected.conversationId, process.cwd());
     setConfigValue('conversationId', selected.conversationId);
 
     console.log('');
@@ -480,22 +439,9 @@ async function discoverAndConnect(config: any): Promise<void> {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// ONE-SHOT DISPATCH
-// ═══════════════════════════════════════════════════════════
-
-async function dispatchCommand(
-  config: any,
-  type: string,
-  payload: any,
-  targetSession?: string
-): Promise<void> {
+async function dispatchCommand(config: any, type: string, payload: any, targetSession?: string): Promise<void> {
   await dispatchAndShow(config, type, payload, targetSession);
 }
-
-// ═══════════════════════════════════════════════════════════
-// HELPERS
-// ═══════════════════════════════════════════════════════════
 
 function getTimeAgo(isoDate: string): string {
   const now = Date.now();

@@ -1,3 +1,5 @@
+// File: src/commands/chat.ts
+
 import { Command } from 'commander';
 import chalk from 'chalk';
 import * as fs from 'fs';
@@ -9,7 +11,7 @@ import { callLocalModel, LocalChatMessage } from '../ai/providers/local.js';
 import { buildPersonalizedPrompt } from '../ai/persona.js';
 import { buildLocalContext, readFileContent } from '../core/context-builder.js';
 import { saveMessage } from '../core/conversation-store.js';
-import { loadSummaries } from '../core/project-map.js';
+import { loadSummaries, getActiveConversationId, setActiveConversationId } from '../core/project-map.js';
 import { getRelevantFileContents } from '../core/file-retrieval.js';
 import { stripCodeBlockFromResponse, processAllProposedFiles, extractAllProposedFiles } from '../core/file-writer.js';
 import { enterDeepDive } from './deepdive.js';
@@ -51,11 +53,19 @@ export function registerChatCommand(program: Command): void {
     .action(async (message: string | undefined, options: { file?: string; context?: boolean; personalized?: boolean; new?: boolean; interactive?: boolean }) => {
       const config = getConfig();
 
-      let conversationId = config.conversationId;
+      // ─── PROJECT-SCOPED conversation ID ──────────────────────────
+      // Read from project.json first, fall back to global config,
+      // generate fresh if neither exists or --new was passed.
+      let conversationId = getActiveConversationId(process.cwd())
+        || config.conversationId
+        || null;
+
       if (options.new || !conversationId) {
         conversationId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        setConfigValue('conversationId', conversationId);
+        setActiveConversationId(conversationId, process.cwd());
+        setConfigValue('conversationId', conversationId); // keep global in sync
       }
+      // ─────────────────────────────────────────────────────────────
 
       let localContext = '';
       if (options.context !== false) { localContext = buildLocalContext(process.cwd()); }
@@ -80,9 +90,9 @@ export function registerChatCommand(program: Command): void {
 
 async function sendMessage(message: string, config: any, conversationId: string, localContext: string, personalized: boolean, mode: 'standard' | 'consultant' | 'personalized', history: LocalChatMessage[], existingRl?: readline.Interface): Promise<string> {
   // ─── RENDER USER MESSAGE (RIGHT-ALIGNED) ───
-const providerReady = await ensureProvider();
-if (!providerReady) return '';
-config = getConfig(); // Re-read after potential auto-configure
+  const providerReady = await ensureProvider();
+  if (!providerReady) return '';
+  config = getConfig(); // Re-read after potential auto-configure
   renderUserMessage(message);
 
   // ─── START ELAPSED TIMER ───
@@ -126,7 +136,6 @@ config = getConfig(); // Re-read after potential auto-configure
 
       const localResult = await callLocalModel(config.localEndpoint, messages);
 
-      // Handle extended response from local model (if available)
       if (typeof localResult === 'object' && localResult.text) {
         response = localResult.text;
         tokenCount = localResult.evalCount || undefined;
@@ -249,6 +258,8 @@ async function runInteractiveSession(config: any, conversationId: string, localC
         history.length = 0;
         lastConstraints = [];
         conversationId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        // ─── Write to project scope ───
+        setActiveConversationId(conversationId, process.cwd());
         setConfigValue('conversationId', conversationId);
         console.log(INFO('  🔄 New session started.'));
         console.log('');
@@ -280,7 +291,6 @@ async function runInteractiveSession(config: any, conversationId: string, localC
         const absolutePath = path.resolve(process.cwd(), filePath);
         if (!fs.existsSync(absolutePath)) { console.log(ERROR(`  ❌ File not found: ${filePath}`)); console.log(''); prompt(); return; }
 
-        // ─── FIX: Pause main rl, use raw stdin for delete confirmation ───
         rl.pause();
         const confirmPromptText = ERROR(`  🗑️  Delete ${filePath}? (y/n): `);
         const confirm = await new Promise<string>(resolve => {

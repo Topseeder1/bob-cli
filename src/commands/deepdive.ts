@@ -1,3 +1,5 @@
+// File: src/commands/deepdive.ts
+
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
@@ -9,6 +11,7 @@ import { startDeepDiveAnimation } from '../ui/animations/deep-dive.js';
 import { buildLocalContext } from '../core/context-builder.js';
 import { getRelevantFileContents } from '../core/file-retrieval.js';
 import { stripCodeBlockFromResponse, processAllProposedFiles, extractAllProposedFiles } from '../core/file-writer.js';
+import { getActiveConversationId } from '../core/project-map.js';
 import {
   startElapsedTimer,
   stopElapsedTimer,
@@ -37,11 +40,14 @@ export function registerDeepDiveCommand(program: Command): void {
     .action(async () => {
       const config = getConfig();
       if (!config.loggedIn || !config.authToken) { console.log(''); console.log(ERROR('  ❌ Not logged in. Deep dives require Tier 3.')); console.log(''); return; }
-      if (!config.conversationId) { console.log(''); console.log(ERROR('  ❌ No active conversation.')); console.log(''); return; }
+
+      // ─── Read conversation ID from project scope ───
+      const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
+      if (!conversationId) { console.log(''); console.log(ERROR('  ❌ No active conversation.')); console.log(''); return; }
 
       const spinner = ora({ text: MODE_DEEPDIVE('  Loading deep dives...'), spinner: 'dots' }).start();
       try {
-        const result = await callCloudFunction('listCLIDeepDives', { conversationId: config.conversationId });
+        const result = await callCloudFunction('listCLIDeepDives', { conversationId });
         spinner.stop();
         const dives = result.deepDives || [];
 
@@ -77,11 +83,14 @@ export function registerDeepDiveCommand(program: Command): void {
     .action(async () => {
       const config = getConfig();
       if (!config.loggedIn || !config.authToken) { console.log(''); console.log(ERROR('  ❌ Not logged in. Deep dives require Tier 3.')); console.log(''); return; }
-      if (!config.conversationId) { console.log(''); console.log(ERROR('  ❌ No active conversation.')); console.log(''); return; }
+
+      // ─── Read conversation ID from project scope ───
+      const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
+      if (!conversationId) { console.log(''); console.log(ERROR('  ❌ No active conversation.')); console.log(''); return; }
 
       const spinner = ora({ text: MODE_DEEPDIVE('  Loading deep dives...'), spinner: 'dots' }).start();
       try {
-        const result = await callCloudFunction('listCLIDeepDives', { conversationId: config.conversationId });
+        const result = await callCloudFunction('listCLIDeepDives', { conversationId });
         spinner.stop();
         const dives = result.deepDives || [];
 
@@ -118,7 +127,7 @@ export function registerDeepDiveCommand(program: Command): void {
         animation.stop();
         await new Promise(resolve => setTimeout(resolve, 300));
 
-        await runDeepDiveSession(config, config.conversationId!, parentMessageId, initiatingPrompt, rl);
+        await runDeepDiveSession(config, conversationId, parentMessageId, initiatingPrompt, rl);
         rl.close();
       } catch (error: any) { spinner.stop(); console.log(ERROR(`  ❌ ${error.message}`)); console.log(''); }
     });
@@ -129,10 +138,13 @@ export function registerDeepDiveCommand(program: Command): void {
     .action(async () => {
       const config = getConfig();
       if (!config.loggedIn || !config.authToken) { console.log(''); console.log(ERROR('  ❌ Not logged in. Deep dives require Tier 3.')); console.log(MUTED('  Run `bob login` to authenticate.')); console.log(''); return; }
-      if (!config.conversationId) { console.log(''); console.log(ERROR('  ❌ No active conversation.')); console.log(MUTED('  Join one with `bob conversations join` first.')); console.log(''); return; }
+
+      // ─── Read conversation ID from project scope ───
+      const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
+      if (!conversationId) { console.log(''); console.log(ERROR('  ❌ No active conversation.')); console.log(MUTED('  Join one with `bob conversations join` first.')); console.log(''); return; }
 
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      await enterDeepDive(config, config.conversationId!, rl);
+      await enterDeepDive(config, conversationId, rl);
       rl.close();
     });
 }
@@ -244,7 +256,6 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
           deepDivePrompt(); return;
         }
 
-        // ─── PERSONALIZATION MODE ALERT ───
         if (trimmed === '/personalized' || trimmed === '/personalize') {
           console.log('');
           console.log(BORDER('  ┌─────────────────────────────────────────────────────────┐'));
@@ -278,7 +289,6 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
           return;
         }
 
-        // ─── SEND MESSAGE ───
         renderUserMessage(trimmed);
         startElapsedTimer();
 
@@ -291,7 +301,7 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
                 : trimmed;
               const retrieval = await getRelevantFileContents(retrievalQuery, config.localEndpoint);
               if (retrieval.fileContents) { localContext += '\n\n' + retrieval.fileContents; }
-            } catch { /* non-fatal */ }
+            } catch { }
           }
 
           await callCloudFunction('saveCLIDeepDiveMessage', { conversationId, parentMessageId, message: trimmed, sender: 'user' });
@@ -318,12 +328,9 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
             responseText = latestResult?.message || 'Deep dive response saved.';
           }
 
-          // ─── STOP TIMER ───
           const elapsedMs = stopElapsedTimer();
-
           lastBobResponse = responseText;
 
-          // ─── RENDER BOB'S RESPONSE ───
           const displayResponse = stripCodeBlockFromResponse(responseText);
           const metadata: ResponseMetadata = {
             elapsedMs,
@@ -337,7 +344,6 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
 
           await renderBobResponse(displayResponse, metadata);
 
-          // ─── RENDER DIFF AFTER RESPONSE ───
           const proposals = extractAllProposedFiles(responseText);
           for (const proposed of proposals) {
             if (proposed.isLocal) {
@@ -345,7 +351,6 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
             }
           }
 
-          // ─── PROCESS FILE PROPOSALS ───
           await processAllProposedFiles(responseText, false, rl);
 
         } catch (error: any) {

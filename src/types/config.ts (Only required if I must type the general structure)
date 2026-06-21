@@ -1,0 +1,20 @@
+export interface ThemeConfig {
+    name: string;
+    colors: {
+        primary?: string;
+        background?: string;
+        surface?: string;
+        text_default?: string;
+        border?: string;
+    };
+    typography: {
+        fontFamily?: string;
+        sizeBase?: string;
+        h1?: string;
+    };
+    spacing: {
+        sm?: string;
+        md?: string;
+        lg?: string;
+    }
+}

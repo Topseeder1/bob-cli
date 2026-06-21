@@ -1,3 +1,5 @@
+// File: src/commands/consult.ts
+
 import { Command } from 'commander';
 import chalk from 'chalk';
 import * as readline from 'readline';
@@ -7,7 +9,7 @@ import { callLocalModel, LocalChatMessage } from '../ai/providers/local.js';
 import { buildPersonalizedPrompt } from '../ai/persona.js';
 import { buildLocalContext, readFileContent } from '../core/context-builder.js';
 import { saveMessage } from '../core/conversation-store.js';
-import { loadSummaries } from '../core/project-map.js';
+import { loadSummaries, getActiveConversationId, setActiveConversationId } from '../core/project-map.js';
 import { getRelevantFileContents } from '../core/file-retrieval.js';
 import { renderSessionHeader } from '../ui/session-header.js';
 import { showWelcomeIfFirstRun } from '../ui/welcome.js';
@@ -45,11 +47,17 @@ export function registerConsultCommand(program: Command): void {
     .action(async (message: string | undefined, options: { file?: string; context?: boolean; new?: boolean; interactive?: boolean }) => {
       const config = getConfig();
 
-      let conversationId = config.conversationId;
+      // ─── PROJECT-SCOPED conversation ID ──────────────────────
+      let conversationId = getActiveConversationId(process.cwd())
+        || config.conversationId
+        || null;
+
       if (options.new || !conversationId) {
         conversationId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        setActiveConversationId(conversationId, process.cwd());
         setConfigValue('conversationId', conversationId);
       }
+      // ─────────────────────────────────────────────────────────
 
       let localContext = '';
       if (options.context !== false) { localContext = buildLocalContext(process.cwd()); }
@@ -65,14 +73,11 @@ export function registerConsultCommand(program: Command): void {
 }
 
 async function sendConsultMessage(message: string, config: any, conversationId: string, localContext: string, history: LocalChatMessage[], existingRl?: readline.Interface): Promise<string> {
-  // ─── RENDER USER MESSAGE (RIGHT-ALIGNED) ───
-const providerReady = await ensureProvider();
-if (!providerReady) return '';
-config = getConfig(); // Re-read after potential auto-configure
+  const providerReady = await ensureProvider();
+  if (!providerReady) return '';
+  config = getConfig();
 
   renderUserMessage(message);
-
-  // ─── START ELAPSED TIMER ───
   startElapsedTimer();
 
   let selectedFiles: string[] = [];
@@ -130,13 +135,9 @@ config = getConfig(); // Re-read after potential auto-configure
       tokenCount = result?.responseTokens || undefined;
     }
 
-    // ─── STOP TIMER ───
     const elapsedMs = stopElapsedTimer();
-
-    // ─── STORE CONSTRAINTS ───
     lastConstraints = constraints;
 
-    // ─── RENDER BOB'S RESPONSE ───
     const metadata: ResponseMetadata = {
       elapsedMs,
       tokenCount,
@@ -148,7 +149,6 @@ config = getConfig(); // Re-read after potential auto-configure
     };
 
     await renderBobResponse(response, metadata);
-
     return response;
 
   } catch (error: any) {
@@ -186,6 +186,8 @@ async function runInteractiveSession(config: any, conversationId: string, localC
         history.length = 0;
         lastConstraints = [];
         conversationId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        // ─── Write to project scope ───
+        setActiveConversationId(conversationId, process.cwd());
         setConfigValue('conversationId', conversationId);
         console.log(MODE_CONSULTANT('  🔄 New consultant session started.'));
         console.log('');

@@ -1,3 +1,5 @@
+// File: src/core/project-map.ts
+
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -10,6 +12,7 @@ export interface ProjectMeta {
   path: string;
   createdAt: string;
   lastIndexed: string | null;
+  activeConversationId?: string | null;
 }
 
 export interface TaskFile {
@@ -51,12 +54,69 @@ export function ensureProjectStructure(workingDir: string): {
       path: workingDir,
       createdAt: new Date().toISOString(),
       lastIndexed: null,
+      activeConversationId: null,
     };
     fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
   }
 
   return { projectDir, conversationsDir, analysisDir, runsDir };
 }
+
+// ─── NEW: Per-project conversation ID ───────────────────────────
+
+/**
+ * Reads the active conversation ID scoped to the current project.
+ * Falls back to null if not set — caller should generate a new ID.
+ */
+export function getActiveConversationId(workingDir?: string): string | null {
+  const cwd = workingDir || process.cwd();
+  const projectDir = getProjectDir(cwd);
+  const metaPath = path.join(projectDir, 'project.json');
+
+  if (!fs.existsSync(metaPath)) return null;
+
+  try {
+    const meta: ProjectMeta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+    return meta.activeConversationId || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Writes the active conversation ID scoped to the current project.
+ * This replaces setConfigValue('conversationId', ...) for project-scoped sessions.
+ */
+export function setActiveConversationId(conversationId: string, workingDir?: string): void {
+  const cwd = workingDir || process.cwd();
+
+  // Ensure project structure exists before writing
+  ensureProjectStructure(cwd);
+
+  const projectDir = getProjectDir(cwd);
+  const metaPath = path.join(projectDir, 'project.json');
+
+  try {
+    let meta: ProjectMeta;
+    if (fs.existsSync(metaPath)) {
+      meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+    } else {
+      meta = {
+        name: getProjectName(cwd),
+        path: cwd,
+        createdAt: new Date().toISOString(),
+        lastIndexed: null,
+        activeConversationId: null,
+      };
+    }
+    meta.activeConversationId = conversationId;
+    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+  } catch (e) {
+    // Silent fail — don't break the chat flow if meta write fails
+  }
+}
+
+// ─── END NEW ─────────────────────────────────────────────────────
 
 export function createAnalysisRun(workingDir: string, files: string[]): {
   runId: string;

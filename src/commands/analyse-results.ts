@@ -1,11 +1,12 @@
 // File: src/commands/analyse-results.ts
+
 import chalk from 'chalk';
 import inquirer from 'inquirer';
 import * as fs from 'fs';
 import * as path from 'path';
 import { callCloudFunction } from '../core/api-client.js';
 import { callLocalModel, LocalChatMessage } from '../ai/providers/local.js';
-import { ensureProjectStructure } from '../core/project-map.js';
+import { ensureProjectStructure, getActiveConversationId } from '../core/project-map.js';
 import { readFileContent } from '../core/context-builder.js';
 import { proposeAndWriteFile } from '../core/file-writer.js';
 import { markSuggestionById } from '../core/analysis-tracker.js';
@@ -52,21 +53,21 @@ interface Suggestion {
   id?: string;
 }
 
-/**
- * Interactive results viewer with real-time search filtering.
- */
 export async function showInteractiveResults(
   config: any,
   category: string,
   sort?: string,
   search?: string,
 ): Promise<void> {
+  // ─── Read conversation ID from project scope ───
+  const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
+
   let allSuggestions: Suggestion[] = [];
 
-  if (config.tier === 'platform' && config.provider !== 'local' && config.loggedIn && config.conversationId) {
+  if (config.tier === 'platform' && config.provider !== 'local' && config.loggedIn && conversationId) {
     try {
       const result = await callCloudFunction('getCLIAnalysisResults', {
-        conversationId: config.conversationId,
+        conversationId,
         category: category,
         sort: sort || 'priority',
         search: search || null,
@@ -180,7 +181,7 @@ export async function showInteractiveResults(
       const action = await showExpandedView(item, category);
 
       if (action === 'implement') {
-        await handleImplement(item, config, category);
+        await handleImplement(item, config, category, conversationId);
         displaySuggestions.splice(selected, 1);
         const originalIdx = allSuggestions.findIndex(s => s.id === item.id);
         if (originalIdx !== -1) allSuggestions.splice(originalIdx, 1);
@@ -250,7 +251,12 @@ async function showExpandedView(item: Suggestion, category: string): Promise<'im
   return action;
 }
 
-async function handleImplement(item: Suggestion, config: any, category: string): Promise<void> {
+async function handleImplement(
+  item: Suggestion,
+  config: any,
+  category: string,
+  conversationId: string | null,
+): Promise<void> {
   console.log('');
   console.log(INFO('  🔧 Implementing fix...'));
   console.log('');
@@ -276,21 +282,20 @@ Implementation Instructions: ${item.implementation || 'Apply the fix described a
 RULES (CRITICAL — VIOLATION = REJECTED):
 - Return ONLY valid source code. No markdown, no code fences, no \`\`\`, no explanation text.
 - Start the FIRST line with: // File: ${item.filePath}
-- PRESERVE ALL existing imports exactly as they are. Do NOT add, remove, or reorder imports.
-- PRESERVE ALL existing exports exactly as they are. Do NOT rename exported functions or classes.
+- PRESERVE ALL existing imports exactly as they are.
+- PRESERVE ALL existing exports exactly as they are.
 - PRESERVE the existing code structure, indentation, patterns, and naming conventions.
 - Make the MINIMUM change necessary to implement the fix. Touch NOTHING else.
 - Do NOT refactor, reorganize, or "improve" unrelated code.
 - Do NOT add comments explaining what you changed.
 - Do NOT wrap the response in markdown code blocks.
-- The output must be valid TypeScript/JavaScript that compiles without errors.
 - If you are unsure about a change, return the file UNCHANGED rather than risk breaking it.
 
 Return the complete file content now:`;
 
     try {
       const messages: LocalChatMessage[] = [
-        { role: 'system', content: 'You are MiniBob, a junior engineer making SURGICAL fixes. Return ONLY valid source code. NO markdown. NO code fences. NO explanation. Start with // File: comment. Make the ABSOLUTE MINIMUM change needed. Do NOT restructure, refactor, or touch ANYTHING beyond the specific fix. If unsure, return the file unchanged.' },
+        { role: 'system', content: 'You are MiniBob, a junior engineer making SURGICAL fixes. Return ONLY valid source code. NO markdown. NO code fences. NO explanation. Start with // File: comment. Make the ABSOLUTE MINIMUM change needed. If unsure, return the file unchanged.' },
         { role: 'user', content: prompt },
       ];
 
@@ -307,7 +312,6 @@ Return the complete file content now:`;
         newContent = response.trim();
       }
 
-      // ─── VALIDATION ───
       if (newContent.includes('```') || newContent.includes('## ') || newContent.startsWith('Here') || newContent.startsWith('I have') || newContent.startsWith('Sure')) {
         console.log(WARNING('  ⚠️  MiniBob returned explanation instead of code. Fix rejected.'));
         return;
@@ -334,7 +338,6 @@ Return the complete file content now:`;
         isLocal: true,
       });
 
-      // Mark as implemented
       if (item.id) {
         markSuggestionById(item.id, category, 'implemented', {
           reason: 'User approved implementation from CLI',
@@ -346,10 +349,10 @@ Return the complete file content now:`;
       console.log(ERROR(`  ❌ Implementation failed: ${error.message}`));
     }
 
-  } else if (config.loggedIn && config.conversationId) {
+  } else if (config.loggedIn && conversationId) {
     try {
       const result = await callCloudFunction('implementSuggestion', {
-        conversationId: config.conversationId,
+        conversationId,
         filePath: item.filePath,
         suggestionId: item.id || 'unknown',
         category: category,
@@ -404,7 +407,6 @@ export function loadLocalSuggestions(category: string): Suggestion[] {
   for (const [filePath, fileResults] of Object.entries(allResults)) {
     const items = (fileResults as any)[category] || [];
     items.forEach((item: any, idx: number) => {
-      // Only include pending items
       if (!item.status || item.status === 'pending') {
         suggestions.push({
           ...item,

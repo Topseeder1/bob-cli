@@ -1,3 +1,5 @@
+// File: src/commands/autonomy.ts
+
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
@@ -9,6 +11,7 @@ import { callLocalModel, LocalChatMessage } from '../ai/providers/local.js';
 import { readFileContent } from '../core/context-builder.js';
 import { loadLocalSuggestions } from './analyse-results.js';
 import { markSuggestionStatus } from '../core/analysis-tracker.js';
+import { getActiveConversationId } from '../core/project-map.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -46,8 +49,11 @@ export function registerAutonomyCommand(program: Command): void {
     .action(async (options: { status?: boolean; stop?: boolean; category?: string; priority?: string; push?: boolean }) => {
       const config = getConfig();
 
+      // ─── Read conversation ID from project scope ───
+      const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
+
       if (options.status) {
-        await showAutonomyStatus(config);
+        await showAutonomyStatus(config, conversationId);
         return;
       }
 
@@ -56,34 +62,28 @@ export function registerAutonomyCommand(program: Command): void {
         return;
       }
 
-      // Route based on tier
-      if (config.tier === 'platform' && config.provider !== 'local' && config.loggedIn && config.conversationId) {
-        await runTier3Autonomy(config);
+      if (config.tier === 'platform' && config.provider !== 'local' && config.loggedIn && conversationId) {
+        await runTier3Autonomy(config, conversationId);
       } else {
         await runTier1Autonomy(config, options);
       }
     });
 }
 
-// ═══════════════════════════════════════════════════════════
-// TIER 3 — PLATFORM AUTONOMY (Streams from Cloud Workers)
-// ═══════════════════════════════════════════════════════════
-
-async function runTier3Autonomy(config: any): Promise<void> {
+async function runTier3Autonomy(config: any, conversationId: string): Promise<void> {
   console.log('');
   console.log(chalk.bold.cyan('  ⚡ MiniBob Autonomy Mode (Platform)'));
   console.log(GRAY('  ─────────────────────────────────────'));
-  console.log(GRAY(`  📡 Conversation: ${config.conversationId?.slice(0, 24)}...`));
-  console.log(GRAY(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${config.conversationId}`));
+  console.log(GRAY(`  📡 Conversation: ${conversationId?.slice(0, 24)}...`));
+  console.log(GRAY(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${conversationId}`));
   console.log(GRAY('  ─────────────────────────────────────'));
   console.log('');
 
-  // 1. Ignite the autonomy loop
   const spinner = ora({ text: CYAN('  Igniting autonomy workers...'), spinner: 'dots' }).start();
 
   try {
     const result = await callCloudFunction('startMiniBobAutonomy', {
-      conversationId: config.conversationId,
+      conversationId,
       proxyEmail: null,
     });
 
@@ -104,7 +104,6 @@ async function runTier3Autonomy(config: any): Promise<void> {
     return;
   }
 
-  // 2. Poll for terminal updates
   let lastTimestamp = new Date().toISOString();
   let running = true;
   let tasksDone = 0;
@@ -115,7 +114,6 @@ async function runTier3Autonomy(config: any): Promise<void> {
   console.log(GRAY('  ─────────────────────────────────────'));
   console.log('');
 
-  // Handle Ctrl+C gracefully
   process.on('SIGINT', () => {
     running = false;
     console.log('');
@@ -128,7 +126,7 @@ async function runTier3Autonomy(config: any): Promise<void> {
   while (running) {
     try {
       const updates = await callCloudFunction('getCLITerminalUpdates', {
-        conversationId: config.conversationId,
+        conversationId,
         since: lastTimestamp,
       });
 
@@ -137,7 +135,6 @@ async function runTier3Autonomy(config: any): Promise<void> {
           const text = line.text || '';
           const type = line.type || 'system';
 
-          // Parse ticker
           if (text.includes('[ACTION:AUTONOMY_TICKER:')) {
             const parts = text.match(/\[ACTION:AUTONOMY_TICKER:(\d+):(\d+):(\d+):(\d+):(\d+):(\d+):(\d+)\]/);
             if (parts) {
@@ -148,13 +145,11 @@ async function runTier3Autonomy(config: any): Promise<void> {
               const tokens = parseInt(parts[6]);
               totalTasks = parseInt(parts[7]);
               tasksDone = bugs + features + improvements + upgrades;
-
               renderTickerHUD(tasksDone, totalTasks, bugs, features, improvements, upgrades, tokens);
             }
             continue;
           }
 
-          // Parse push request
           if (text.includes('[ACTION:GITHUB_PUSH_REQUEST:')) {
             console.log('');
             console.log(GREEN('  ✅ All tasks complete!'));
@@ -168,7 +163,7 @@ async function runTier3Autonomy(config: any): Promise<void> {
 
             if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
               try {
-                await callCloudFunction('commitAndPushChanges', { conversationId: config.conversationId });
+                await callCloudFunction('commitAndPushChanges', { conversationId });
                 console.log(GREEN('  ✅ Pushed to GitHub!'));
               } catch (pushErr: any) {
                 console.log(RED(`  ❌ Push failed: ${pushErr.message}`));
@@ -181,19 +176,16 @@ async function runTier3Autonomy(config: any): Promise<void> {
             continue;
           }
 
-          // Parse completion
           if (text.includes('ALL TASKS COMPLETE')) {
             running = false;
           }
 
-          // Render line
           let lineColor: any;
           if (type === 'stderr') lineColor = RED;
           else if (type === 'stdout') lineColor = GREEN;
           else lineColor = GRAY;
 
           console.log(lineColor(`  ${text}`));
-
           lastTimestamp = line.timestamp || lastTimestamp;
         }
       }
@@ -202,7 +194,6 @@ async function runTier3Autonomy(config: any): Promise<void> {
       // Silent failure on polling — just retry
     }
 
-    // Wait 2.5 seconds between polls
     if (running) {
       await new Promise(resolve => setTimeout(resolve, 2500));
     }
@@ -216,10 +207,6 @@ async function runTier3Autonomy(config: any): Promise<void> {
   console.log(BORDER('  ╚══════════════════════════════════════════════════════════╝'));
   console.log('');
 }
-
-// ═══════════════════════════════════════════════════════════
-// TIER 1 — LOCAL AUTONOMY (Uses Ollama directly)
-// ═══════════════════════════════════════════════════════════
 
 async function runTier1Autonomy(config: any, options: any): Promise<void> {
   if (config.provider !== 'local' || !config.localEndpoint) {
@@ -242,13 +229,11 @@ async function runTier1Autonomy(config: any, options: any): Promise<void> {
   console.log(GRAY('  ─────────────────────────────────────'));
   console.log('');
 
-  // 1. Load all pending suggestions
   let allSuggestions: Suggestion[] = [];
   for (const cat of categories) {
     allSuggestions.push(...loadLocalSuggestions(cat));
   }
 
-  // Filter by priority
   const priorityOrder = ['critical', 'high', 'medium', 'low'];
   const gateIndex = priorityOrder.indexOf(priorityGate.toLowerCase());
   if (gateIndex >= 0) {
@@ -266,13 +251,11 @@ async function runTier1Autonomy(config: any, options: any): Promise<void> {
   console.log(GRAY(`  Found ${allSuggestions.length} tasks to process.`));
   console.log('');
 
-  // 2. Build work queue
   const workQueue: TaskItem[] = allSuggestions.map(s => ({
     suggestion: s,
     status: 'pending' as const,
   }));
 
-  // 3. Process each task
   renderLocalTodoList(workQueue);
 
   let fixed = 0;
@@ -290,8 +273,6 @@ async function runTier1Autonomy(config: any, options: any): Promise<void> {
     if (success) {
       fixed++;
       fixedFiles.push(task.suggestion.filePath);
-
-      // Mark in analysis.json
       const suggestionIndex = parseInt(task.suggestion.id?.split('_').pop() || '0');
       const category = detectLocalCategory(task.suggestion);
       markSuggestionStatus(task.suggestion.filePath, suggestionIndex, category, 'implemented', {
@@ -306,7 +287,6 @@ async function runTier1Autonomy(config: any, options: any): Promise<void> {
     renderLocalTodoList(workQueue);
   }
 
-  // 4. Report
   console.log('');
   console.log('');
   console.log(BORDER('  ╔══════════════════════════════════════════════════════════╗'));
@@ -317,7 +297,6 @@ async function runTier1Autonomy(config: any, options: any): Promise<void> {
   console.log(BORDER('  ╚══════════════════════════════════════════════════════════╝'));
   console.log('');
 
-  // 5. Git push
   if (shouldPush && fixed > 0) {
     const git = simpleGit(process.cwd());
     const isRepo = await git.checkIsRepo();
@@ -327,11 +306,10 @@ async function runTier1Autonomy(config: any, options: any): Promise<void> {
 
       try {
         await git.add('.');
-
         const commitMessage = `MiniBob Autonomy: Fixed ${fixed} issue(s)\n\nFiles modified:\n${fixedFiles.map(f => `- ${f}`).join('\n')}\n\nAutonomous repair by Bob's CLI.`;
         await git.commit(commitMessage);
-
         const branch = (await git.branchLocal()).current;
+
         try {
           await git.push('origin', branch);
         } catch (pushErr: any) {
@@ -359,12 +337,8 @@ async function runTier1Autonomy(config: any, options: any): Promise<void> {
   console.log('');
 }
 
-// ═══════════════════════════════════════════════════════════
-// STATUS CHECK
-// ═══════════════════════════════════════════════════════════
-
-async function showAutonomyStatus(config: any): Promise<void> {
-  if (!config.loggedIn || !config.conversationId) {
+async function showAutonomyStatus(config: any, conversationId: string | null): Promise<void> {
+  if (!config.loggedIn || !conversationId) {
     console.log(chalk.yellow('  ⚠️  Status requires Tier 3 with an active conversation.'));
     return;
   }
@@ -373,8 +347,8 @@ async function showAutonomyStatus(config: any): Promise<void> {
 
   try {
     const result = await callCloudFunction('getCLITerminalUpdates', {
-      conversationId: config.conversationId,
-      since: new Date(Date.now() - 60000).toISOString(), // Last 60 seconds
+      conversationId,
+      since: new Date(Date.now() - 60000).toISOString(),
       limit: 5,
     });
 
@@ -398,10 +372,6 @@ async function showAutonomyStatus(config: any): Promise<void> {
     console.log(RED(`  ❌ ${error.message}`));
   }
 }
-
-// ═══════════════════════════════════════════════════════════
-// LOCAL IMPLEMENTATION
-// ═══════════════════════════════════════════════════════════
 
 async function implementLocalTask(suggestion: Suggestion, endpoint: string): Promise<boolean> {
   const fileContent = readFileContent(suggestion.filePath);
@@ -448,7 +418,6 @@ Return the complete file content now:`;
       newContent = response.trim();
     }
 
-    // Validation
     if (newContent.includes('```') || newContent.includes('## ') || newContent.startsWith('Here') || newContent.startsWith('I have') || newContent.startsWith('Sure')) {
       return false;
     }
@@ -465,7 +434,6 @@ Return the complete file content now:`;
       }
     }
 
-    // Backup + write
     const absolutePath = path.join(process.cwd(), suggestion.filePath);
     const backupDir = path.join(process.cwd(), '.bob-backups');
     if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
@@ -486,10 +454,6 @@ Return the complete file content now:`;
     return false;
   }
 }
-
-// ═══════════════════════════════════════════════════════════
-// HELPERS
-// ═══════════════════════════════════════════════════════════
 
 function detectLocalCategory(suggestion: Suggestion): string {
   const cwd = process.cwd();
