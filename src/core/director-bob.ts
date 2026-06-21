@@ -46,6 +46,7 @@ import {
 const DEFAULT_DIRECTOR_LIMIT = 2;
 const MAX_PARALLEL_TASKS = 4;
 const TASK_LOOP_INTERVAL_MS = 500;
+const MAX_COMMIT_DENIALS = 3; // After this many denials, surface to user
 
 // ─── INTERFACES ───────────────────────────────────────────────────
 
@@ -63,6 +64,7 @@ export interface DirectorState {
   userInjections: string[];
   satisfactionOverrides: Record<string, number>;
   pendingCommitApproval: null;
+  commitDenialCounts: Map<string, number>;
 }
 
 // ─── PROJECT CONTEXT ──────────────────────────────────────────────
@@ -107,11 +109,7 @@ function buildDirectorProjectContext(cwd: string): {
     }
   }
 
-  return {
-    existingFiles,
-    hasTests,
-    fileAssessment: assessmentLines.join('\n'),
-  };
+  return { existingFiles, hasTests, fileAssessment: assessmentLines.join('\n') };
 }
 
 // ─── TASK MAP GENERATION ──────────────────────────────────────────
@@ -191,7 +189,6 @@ Respond with ONLY a valid JSON array. No explanation. No markdown:
     }
 
     if (!rawTasks || !Array.isArray(rawTasks) || rawTasks.length === 0) {
-      console.error('[DIRECTORBOB] Failed to parse task map.');
       throw new Error('Invalid task map response from model.');
     }
 
@@ -286,19 +283,12 @@ Give ONE specific directive. Reference actual file paths. 2 sentences max. Plain
 
 // ─── INTELLIGENT COMMIT REVIEW ────────────────────────────────────
 
-/**
- * DirectorBob processes pending commits with intelligent review.
- *
- * KEY FIX: When a commit is DENIED, the revision note is injected
- * back into the originating task's notes array. This means on the
- * agent's next attempt, the DIRECTOR NOTES section in the prompt
- * contains exactly what was wrong — the agent learns from the denial.
- */
 async function handlePendingCommits(
   cwd: string,
   localEndpoint: string,
   taskMap: Map<string, AgentTask>,
   mission: AgentMission,
+  state: DirectorState,
   onEvent?: (event: ExecutionEvent) => void
 ): Promise<void> {
   const pending = loadPendingCommits(cwd);
@@ -334,6 +324,9 @@ async function handlePendingCommits(
         clearPendingCommit(commit.id, cwd);
         emit('done', `DirectorBob approved ✅ committed: ${result.commit?.slice(0, 7)} — ${commit.message}`);
 
+        // Reset denial count on successful commit
+        state.commitDenialCounts.delete(commit.taskId);
+
         if (review.filesReviewed.some(f => f.verdict === 'WARN')) {
           emit(
             'thinking',
@@ -349,9 +342,13 @@ async function handlePendingCommits(
       }
 
     } else {
-      // ─── DENY: restore files + inject revision note into task ──
+      // ─── DENY: restore files + track denial count ─────────────
       const { restored, failed } = restoreDeniedFiles(review, cwd);
       clearPendingCommit(commit.id, cwd);
+
+      // Increment denial count for this task
+      const denials = (state.commitDenialCounts.get(commit.taskId) || 0) + 1;
+      state.commitDenialCounts.set(commit.taskId, denials);
 
       emit('error', `DirectorBob DENIED commit from @${commit.agentName}: ${review.reason}`);
 
@@ -362,24 +359,41 @@ async function handlePendingCommits(
         emit('error', `Could not restore ${failed.length} file(s): ${failed.join(', ')}`);
       }
 
-      // ─── KEY FIX: Inject revision note into task notes ────────
-      // This means the NEXT attempt the agent makes will have
-      // DirectorBob's specific feedback in its DIRECTOR NOTES
-      // section — the agent learns exactly what was wrong.
-      if (review.revisionNote && task) {
-        const revisionMessage = `COMMIT DENIED: ${review.revisionNote}`;
+      if (denials >= MAX_COMMIT_DENIALS) {
+        // ─── Max denials hit → surface to user, do NOT reopen ───
+        if (task) {
+          updateTaskStatus(mission, task.id, 'stagnated', cwd);
+          addTaskNote(
+            mission,
+            task.id,
+            `COMMIT DENIED ${denials} times. User intervention required. Last reason: ${review.reason}`,
+            cwd
+          );
+        }
+        state.paused = true;
+        emit(
+          'error',
+          `@${commit.agentName} reached maximum commit denials (${MAX_COMMIT_DENIALS}). Mission paused — user intervention needed.`
+        );
+        emit(
+          'thinking',
+          `Type /resume after reviewing the task, or /skip ${commit.taskId} to skip it.`
+        );
+
+      } else if (review.revisionNote && task) {
+        // ─── Under limit → inject revision note and reopen ───────
+        const revisionMessage = `COMMIT DENIED (${denials}/${MAX_COMMIT_DENIALS}): ${review.revisionNote}`;
         addTaskNote(mission, task.id, revisionMessage, cwd);
         emit('response', `DirectorBob → @${commit.agentName}: ${review.revisionNote}`);
 
-        // ─── Reopen task as pending so agent retries ─────────────
-        // Reset satisfaction so agent doesn't think it's done
+        // Reopen task with feedback
         task.status = 'pending';
         task.lastSatisfactionScore = null;
         saveMission(mission, cwd);
 
         emit(
           'thinking',
-          `Task reopened for @${commit.agentName} with revision feedback. Agent will retry.`
+          `Task reopened for @${commit.agentName} (denial ${denials}/${MAX_COMMIT_DENIALS}). Agent will retry with feedback.`
         );
       } else if (review.revisionNote) {
         emit('response', `DirectorBob → @${commit.agentName}: ${review.revisionNote}`);
@@ -407,7 +421,6 @@ export async function runAutonomousLoop(
 
   const activeExecutions = new Map<string, Promise<TaskExecutionResult>>();
 
-  // Build task map for commit review context + note injection
   const taskMap = new Map<string, AgentTask>();
   for (const task of mission.tasks) {
     taskMap.set(task.id, task);
@@ -415,28 +428,24 @@ export async function runAutonomousLoop(
 
   while (true) {
 
-    // ─── Abort ───────────────────────────────────────────────────
     if (state.aborted) {
       mission.status = 'aborted';
       saveMission(mission, cwd);
       return { mission, completed: false, aborted: true, surfacedToUser: false };
     }
 
-    // ─── Pause ───────────────────────────────────────────────────
     if (state.paused) {
       await new Promise(r => setTimeout(r, 1000));
       continue;
     }
 
-    // ─── Process pending commits when idle ───────────────────────
     if (activeExecutions.size === 0) {
-      await handlePendingCommits(cwd, localEndpoint, taskMap, mission, onEvent);
+      await handlePendingCommits(cwd, localEndpoint, taskMap, mission, state, onEvent);
     }
 
-    // ─── Mission complete ─────────────────────────────────────────
     if (isMissionComplete(mission)) {
       if (activeExecutions.size === 0) {
-        await handlePendingCommits(cwd, localEndpoint, taskMap, mission, onEvent);
+        await handlePendingCommits(cwd, localEndpoint, taskMap, mission, state, onEvent);
       }
       mission.status = 'completed';
       mission.completedAt = new Date().toISOString();
@@ -445,7 +454,6 @@ export async function runAutonomousLoop(
       return { mission, completed: true, aborted: false, surfacedToUser: false };
     }
 
-    // ─── Mission blocked ──────────────────────────────────────────
     if (isMissionBlocked(mission) && activeExecutions.size === 0) {
       mission.status = 'failed';
       saveMission(mission, cwd);
@@ -459,11 +467,7 @@ export async function runAutonomousLoop(
       };
     }
 
-    // ─── Get ready tasks ──────────────────────────────────────────
-    const readyTasks = getReadyTasks(mission).filter(
-      t => !activeExecutions.has(t.id)
-    );
-
+    const readyTasks = getReadyTasks(mission).filter(t => !activeExecutions.has(t.id));
     const availableSlots = MAX_PARALLEL_TASKS - activeExecutions.size;
     const tasksToFire = readyTasks.slice(0, availableSlots);
 
