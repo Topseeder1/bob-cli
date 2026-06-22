@@ -1,6 +1,9 @@
 // File: src/ui/agent-run-renderer.ts
 
 import chalk from 'chalk';
+import * as fs from 'fs';
+import * as path from 'path';
+import { diffLines } from 'diff';
 import {
   AgentMission,
   AgentTask,
@@ -25,6 +28,7 @@ const BORDER         = chalk.hex('#455A64');
 const WHITE          = chalk.white;
 const ORANGE         = chalk.hex('#FF7043');
 const DIRECTOR_COLOR = chalk.hex('#FFD700');
+const BRAND_SECONDARY = chalk.hex('#FFAB00');
 
 function isLeakedContent(line: string): boolean {
   const t = line.trim();
@@ -368,7 +372,6 @@ export async function renderPostMissionFeedback(
 
   if (feedback.length === 0) return;
 
-  // ─── Save to project feedback folder ─────────────────────────
   const projectName = path.basename(cwd);
   const feedbackDir = path.join(os.homedir(), '.bob', 'projects', projectName, 'agents', 'feedback');
   if (!fs.existsSync(feedbackDir)) fs.mkdirSync(feedbackDir, { recursive: true });
@@ -383,7 +386,6 @@ export async function renderPostMissionFeedback(
   const feedbackFile = path.join(feedbackDir, `${mission.id}.json`);
   fs.writeFileSync(feedbackFile, JSON.stringify(sessionFeedback, null, 2));
 
-  // ─── Also save to global training folder ─────────────────────
   const globalDir = path.join(os.homedir(), '.bob', 'global', 'agent-training');
   if (!fs.existsSync(globalDir)) fs.mkdirSync(globalDir, { recursive: true });
 
@@ -456,6 +458,160 @@ export function renderDirectorPlanning(): void {
   console.log(DIRECTOR_COLOR('  ║') + GRAY('  ◎ Setting per-task satisfaction targets'));
   console.log(DIRECTOR_COLOR('  ╚══════════════════════════════════════════════════════════╝'));
   console.log('');
+}
+
+// ─── POST-MISSION COMMIT PROMPT ───────────────────────────────────
+// NEW ADDITION — everything above this line is unchanged from original.
+//
+// Shows a condensed file summary (same visual language as chat's
+// renderFileDiff) then offers to commit with a pre-filled message.
+
+export async function renderPostMissionCommitPrompt(
+  mission: AgentMission,
+  cwd: string
+): Promise<void> {
+  const readline = await import('readline');
+
+  // ─── Collect all files touched this mission ───────────────────
+  const allCreated: string[] = [];
+  const allModified: string[] = [];
+
+  for (const task of mission.tasks) {
+    if (task.status !== 'completed') continue;
+    for (const f of task.filesCreated) {
+      if (!allCreated.includes(f)) allCreated.push(f);
+    }
+    for (const f of task.filesModified) {
+      if (!allModified.includes(f) && !allCreated.includes(f)) allModified.push(f);
+    }
+  }
+
+  const totalFiles = allCreated.length + allModified.length;
+  if (totalFiles === 0) return;
+
+  // ─── Render condensed file summary ───────────────────────────
+  console.log('');
+  console.log(BORDER('  ╔══════════════════════════════════════════════════════════╗'));
+  console.log(BORDER('  ║') + AMBER('  📦 Mission Changes — Ready to Commit'));
+  console.log(BORDER('  ╠══════════════════════════════════════════════════════════╣'));
+  console.log('');
+
+  // Created files — same style as chat renderFileDiff isNew=true
+  for (const filePath of allCreated) {
+    const absolutePath = path.join(cwd, filePath);
+    let lineCount = 0;
+    try {
+      const content = fs.readFileSync(absolutePath, 'utf-8');
+      lineCount = content.split('\n').length;
+    } catch { }
+    console.log(GREEN(`  ◆ Created  ${filePath}`));
+    console.log(chalk.bgHex('#0D2B0D')(chalk.white(`    + New file (${lineCount} lines)`)));
+    console.log('');
+  }
+
+  // Modified files — diff preview with +/- counts
+  for (const filePath of allModified) {
+    const absolutePath = path.join(cwd, filePath);
+    let additions = 0;
+    let removals = 0;
+    const diffPreview: string[] = [];
+
+    try {
+      const backupDir = path.join(cwd, '.bob-backups');
+      if (fs.existsSync(backupDir) && fs.existsSync(absolutePath)) {
+        const safeName = filePath.replace(/[\/\\]/g, '_');
+        const backups = fs.readdirSync(backupDir)
+          .filter(f => f.startsWith(safeName) && f.endsWith('.bak'))
+          .sort()
+          .reverse();
+
+        if (backups.length > 0) {
+          const originalContent = fs.readFileSync(path.join(backupDir, backups[0]), 'utf-8');
+          const currentContent = fs.readFileSync(absolutePath, 'utf-8');
+          const changes = diffLines(originalContent, currentContent);
+
+          for (const change of changes) {
+            const lines = change.value.split('\n').filter(l => l !== '');
+            for (const line of lines) {
+              if (change.added) {
+                additions++;
+                if (diffPreview.length < 4) {
+                  diffPreview.push(chalk.bgHex('#0D2B0D')(chalk.white(`    + ${line.slice(0, 60)}${line.length > 60 ? '...' : ''}`)));
+                }
+              } else if (change.removed) {
+                removals++;
+                if (diffPreview.length < 4) {
+                  diffPreview.push(chalk.bgHex('#2D0D0D')(chalk.white(`    - ${line.slice(0, 60)}${line.length > 60 ? '...' : ''}`)));
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch { }
+
+    console.log(BRAND_SECONDARY(`  ◆ Modified ${filePath}`));
+    for (const line of diffPreview) console.log(line);
+    if (additions > 0 || removals > 0) {
+      console.log(GRAY(`    ${GREEN(`+${additions}`)} ${RED(`-${removals}`)}`));
+    }
+    console.log('');
+  }
+
+  console.log(BORDER('  ╠══════════════════════════════════════════════════════════╣'));
+  console.log(BORDER('  ║') + GRAY(`  ${allCreated.length} created  │  ${allModified.length} modified  │  ${totalFiles} total`));
+  console.log(BORDER('  ╚══════════════════════════════════════════════════════════╝'));
+  console.log('');
+
+  // ─── Commit prompt ────────────────────────────────────────────
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const answer = await new Promise<string>(resolve => {
+    rl.question(AMBER('  Commit these changes? (y/n): '), resolve);
+  });
+
+  if (answer.trim().toLowerCase() !== 'y' && answer.trim().toLowerCase() !== 'yes') {
+    rl.close();
+    console.log(GRAY('  Skipped. Run `git add . && git commit` manually when ready.'));
+    console.log('');
+    return;
+  }
+
+  const defaultMessage = `feat(agents): ${mission.description.slice(0, 60)}`;
+  const messageAnswer = await new Promise<string>(resolve => {
+    rl.question(AMBER(`  Commit message (Enter for default: "${defaultMessage.slice(0, 40)}..."): `), resolve);
+  });
+  rl.close();
+
+  const commitMessage = messageAnswer.trim() || defaultMessage;
+
+  // ─── Run git commit ───────────────────────────────────────────
+  try {
+    const simpleGit = (await import('simple-git')).default;
+    const git = simpleGit(cwd);
+
+    const isRepo = await git.checkIsRepo().catch(() => false);
+    if (!isRepo) {
+      console.log(RED('  ❌ Not a git repository. Run `git init` first.'));
+      console.log('');
+      return;
+    }
+
+    await git.add('.');
+    const result = await git.commit(commitMessage);
+
+    console.log('');
+    console.log(GREEN(`  ✅ Committed: ${result.commit?.slice(0, 7)} — ${commitMessage}`));
+    console.log(GRAY('  Run `git push` to push to remote.'));
+    console.log('');
+
+  } catch (e: any) {
+    console.log(RED(`  ❌ Commit failed: ${e.message}`));
+    console.log('');
+  }
 }
 
 // ─── USER CONTROLS ────────────────────────────────────────────────

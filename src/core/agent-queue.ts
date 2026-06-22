@@ -14,6 +14,8 @@ export type TaskStatus =
   | 'stagnated'
   | 'skipped';
 
+export type OperationType = 'CREATE' | 'PATCH' | 'REFACTOR' | 'REPLACE';
+
 export interface AgentTask {
   id: string;
   missionId: string;
@@ -21,6 +23,7 @@ export interface AgentTask {
   instruction: string;
   dependsOn: string[];
   status: TaskStatus;
+  operationType: OperationType;
   satisfactionTarget: number;
   stagnationLimit: number;
   directorLimit: number;
@@ -72,6 +75,42 @@ function ensureQueueDir(workingDir?: string): void {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+// ─── OPERATION TYPE INFERENCE ─────────────────────────────────────
+
+/**
+ * Infers the operation type from the task instruction + whether the target file exists.
+ * DirectorBob calls this during task map generation.
+ */
+export function inferOperationType(
+  instruction: string,
+  targetFileExists: boolean
+): OperationType {
+  if (!targetFileExists) return 'CREATE';
+
+  const lower = instruction.toLowerCase();
+
+  // Explicit REPLACE signals
+  if (
+    lower.includes('replace') ||
+    lower.includes('rewrite') ||
+    lower.includes('rebuild') ||
+    lower.includes('start fresh') ||
+    lower.includes('completely new')
+  ) return 'REPLACE';
+
+  // REFACTOR signals — structural changes, preserve exports
+  if (
+    lower.includes('refactor') ||
+    lower.includes('restructure') ||
+    lower.includes('reorganize') ||
+    lower.includes('clean up') ||
+    lower.includes('migrate')
+  ) return 'REFACTOR';
+
+  // Default for existing files: PATCH (surgical, targeted)
+  return 'PATCH';
+}
+
 // ─── MISSION OPERATIONS ───────────────────────────────────────────
 
 export function createMission(
@@ -92,6 +131,7 @@ export function createMission(
     id: `${missionId}_t${idx + 1}`,
     missionId,
     status: 'pending',
+    operationType: t.operationType || 'CREATE',
     attemptCount: 0,
     stagnationCount: 0,
     directorSurfaceCount: 0,
@@ -243,16 +283,6 @@ export function addTaskNote(
 
 // ─── DEPENDENCY RESOLUTION ────────────────────────────────────────
 
-/**
- * Returns all tasks that are ready to run right now.
- * A task is ready when:
- * 1. Its status is 'pending'
- * 2. ALL tasks it depends on are 'completed'
- *
- * This enables dependency-aware parallel execution:
- * tasks with no deps fire immediately,
- * dependent tasks fire as soon as their deps complete.
- */
 export function getReadyTasks(mission: AgentMission): AgentTask[] {
   const completedIds = new Set(
     mission.tasks

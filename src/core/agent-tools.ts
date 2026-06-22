@@ -1,8 +1,7 @@
-// File: src/core/agent-tools.ts
-
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execSync } from 'child_process';
 
 const BOB_DIR = path.join(os.homedir(), '.bob');
 
@@ -16,7 +15,8 @@ export type ToolName =
   | 'gitCommit'
   | 'gitPush'
   | 'analyseFile'
-  | 'runBackup';
+  | 'runBackup'
+  | 'runCommand';
 
 export interface ToolCall {
   tool: ToolName;
@@ -29,6 +29,41 @@ export interface ToolResult {
   filesCreated: string[];
   filesModified: string[];
   error?: string;
+}
+
+// ─── SAFE COMMAND WHITELIST ───────────────────────────────────────
+// Only these command prefixes are permitted.
+// Protects users from agents running destructive commands.
+
+const SAFE_COMMAND_PREFIXES: string[] = [
+  'flutter pub add',
+  'flutter pub get',
+  'flutter pub upgrade',
+  'dart pub add',
+  'dart pub get',
+  'npm install',
+  'npm i ',
+  'npm add',
+  'yarn add',
+  'yarn install',
+  'pnpm add',
+  'pnpm install',
+  'pip install',
+  'pip3 install',
+  'cargo add',
+  'go get',
+  'composer require',
+  'bundle add',
+  'gem install',
+  'pod install',
+  'pod update',
+];
+
+function isCommandSafe(command: string): boolean {
+  const normalized = command.trim().toLowerCase();
+  return SAFE_COMMAND_PREFIXES.some(prefix =>
+    normalized.startsWith(prefix.toLowerCase())
+  );
 }
 
 // ─── PENDING COMMIT (multi-queue) ────────────────────────────────
@@ -65,7 +100,7 @@ export function loadPendingCommits(cwd: string): PendingCommit[] {
   try {
     return fs.readdirSync(dir)
       .filter(f => f.endsWith('.json'))
-      .sort() // oldest first
+      .sort()
       .map(f => {
         try {
           return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
@@ -105,16 +140,14 @@ export function clearAllPendingCommits(cwd: string): void {
 
 const ALL_TOOL_NAMES: ToolName[] = [
   'readFile', 'deleteFile', 'writeOutput', 'readAgentOutput',
-  'gitCommit', 'gitPush', 'analyseFile', 'runBackup',
+  'gitCommit', 'gitPush', 'analyseFile', 'runBackup', 'runCommand',
 ];
 
 // ─── TOOL PROMPT ──────────────────────────────────────────────────
 
 export const AGENT_TOOLS_PROMPT = `
 ACTION TOOLS (for non-file operations):
-Use this format as the VERY LAST LINE of your response when you need an action:
-
-TOOL_CALL: {"tool": "<toolName>", "params": {<params>}}
+Use the "toolCall" field in your JSON response when you need an action.
 
 readFile
   params: { "path": "src/core/config-store.ts" }
@@ -128,11 +161,16 @@ readAgentOutput
   params: { "agentName": "architectBob", "taskId": "m_123_t1" }
   Use when: Reading another agent's task output.
 
+runCommand
+  params: { "command": "flutter pub add intl" }
+  Use when: A required package is missing and needs to be installed.
+  SAFE commands only: flutter pub add, npm install, yarn add, pip install, etc.
+  NEVER use for: rm, delete, format, drop, or any destructive operation.
+
 gitCommit
   params: { "message": "your commit message" }
-  Use when: You believe your work is complete and ready for review.
-  NOTE: This queues a commit request. DirectorBob reviews the changes
-  intelligently before approving. It does NOT commit immediately.
+  Use when: Your work is complete and ready for DirectorBob review.
+  NOTE: Queues a commit request — DirectorBob reviews before approving.
 
 gitPush
   params: {}
@@ -143,9 +181,10 @@ deleteFile
   Use when: Removing a file that is no longer needed.
 
 RULES:
-- Only ONE action tool per response as the VERY LAST LINE.
-- For file creation/modification use the // File: format above.
-- Always readFile before modifying so you have current content.
+- Only ONE toolCall per JSON response.
+- For file creation/modification use the "files" array in your JSON response.
+- Always readFile before modifying an existing file.
+- If a package import fails, use runCommand to install it first.
 - gitCommit queues a review request — DirectorBob approves or denies.
 `;
 
@@ -157,7 +196,6 @@ export function parseToolCall(response: string): ToolCall | null {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
 
-    // Format 1: TOOL_CALL: {...} / tool_call: {...}
     if (line.toLowerCase().startsWith('tool_call:')) {
       try {
         const colonIdx = line.indexOf(':');
@@ -169,7 +207,6 @@ export function parseToolCall(response: string): ToolCall | null {
       } catch { }
     }
 
-    // Format 2: Python style readFile(path='...')
     const pythonMatch = line.match(/^(\w+)\s*\(\s*path\s*=\s*['"]([^'"]+)['"]\s*\)/);
     if (pythonMatch) {
       const toolName = pythonMatch[1] as ToolName;
@@ -178,7 +215,6 @@ export function parseToolCall(response: string): ToolCall | null {
       }
     }
 
-    // Format 3: toolName\n{...}
     if (ALL_TOOL_NAMES.includes(line as ToolName) && i + 1 < lines.length) {
       const nextLine = lines[i + 1].trim();
       if (nextLine.startsWith('{')) {
@@ -191,31 +227,6 @@ export function parseToolCall(response: string): ToolCall | null {
       }
     }
 
-    // Format 4: toolName {\n...\n}
-    if (ALL_TOOL_NAMES.includes(line as ToolName)) {
-      let jsonStr = '';
-      let depth = 0;
-      let started = false;
-      for (let j = i + 1; j < Math.min(i + 8, lines.length); j++) {
-        const jLine = lines[j].trim();
-        for (const char of jLine) {
-          if (char === '{') { depth++; started = true; }
-          if (char === '}') depth--;
-        }
-        jsonStr += jLine + '\n';
-        if (started && depth === 0) break;
-      }
-      if (jsonStr.trim()) {
-        try {
-          const params = JSON.parse(jsonStr.trim());
-          if (Object.keys(params).length > 0) {
-            return { tool: line as ToolName, params };
-          }
-        } catch { }
-      }
-    }
-
-    // Format 5: inline {"tool": "...", "params": {...}}
     if (line.startsWith('{') && line.includes('"tool"')) {
       try {
         const parsed = JSON.parse(line);
@@ -243,7 +254,7 @@ export function stripToolCall(response: string): string {
     if (
       line.startsWith('{"path"') || line.startsWith('{"message"') ||
       line.startsWith('{"content"') || line.startsWith('{"tool"') ||
-      line.startsWith('{"agentName"')
+      line.startsWith('{"agentName"') || line.startsWith('{"command"')
     ) continue;
     result.push(lines[i]);
   }
@@ -284,6 +295,7 @@ export class AgentToolExecutor {
       case 'gitPush':         return this.gitPush();
       case 'analyseFile':     return this.analyseFile(toolCall.params);
       case 'runBackup':       return this.runBackup();
+      case 'runCommand':      return this.runCommand(toolCall.params);
       default:
         return this.error(`Unknown tool: ${(toolCall as any).tool}`);
     }
@@ -344,10 +356,47 @@ export class AgentToolExecutor {
     }
   }
 
+  // ─── RUN COMMAND ──────────────────────────────────────────────
+  // Executes a whitelisted shell command in the project directory.
+  // Only package installation commands are permitted.
+  // Protects users from agents running destructive operations.
+
+  private runCommand(params: Record<string, any>): ToolResult {
+    const command = params.command;
+    if (!command) return this.error('runCommand requires command.');
+
+    // ─── Safety check — whitelist only ────────────────────────
+    if (!isCommandSafe(command)) {
+      return this.error(
+        `Command not permitted: "${command}". ` +
+        `Only package installation commands are allowed (flutter pub add, npm install, etc.). ` +
+        `Never use runCommand for file operations or destructive commands.`
+      );
+    }
+
+    try {
+      const output = execSync(command, {
+        cwd: this.cwd,
+        timeout: 60000, // 60 second timeout
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      return {
+        success: true,
+        output: `Command succeeded: ${command}\n${output.slice(0, 500)}`,
+        filesCreated: [],
+        filesModified: [],
+      };
+    } catch (e: any) {
+      const stderr = e.stderr ? e.stderr.toString().slice(0, 300) : '';
+      return this.error(
+        `Command failed: "${command}"\n${e.message}\n${stderr}`
+      );
+    }
+  }
+
   // ─── GIT COMMIT → MULTI-QUEUE ─────────────────────────────────
-  // Creates a pending commit entry in the queue directory.
-  // DirectorBob processes them oldest-first with intelligent review.
-  // Multiple agents can queue commits without collision.
 
   private gitCommitQueue(params: Record<string, any>): ToolResult {
     const message = params.message;

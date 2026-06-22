@@ -11,6 +11,7 @@ import {
 import {
   AgentTask,
   AgentMission,
+  OperationType,
   createMission,
   loadMission,
   saveMission,
@@ -20,6 +21,7 @@ import {
   getMissionSummary,
   isMissionComplete,
   isMissionBlocked,
+  inferOperationType,
 } from './agent-queue.js';
 import {
   inferSatisfactionTarget,
@@ -46,7 +48,7 @@ import {
 const DEFAULT_DIRECTOR_LIMIT = 2;
 const MAX_PARALLEL_TASKS = 4;
 const TASK_LOOP_INTERVAL_MS = 500;
-const MAX_COMMIT_DENIALS = 3; // After this many denials, surface to user
+const MAX_COMMIT_DENIALS = 3;
 
 // ─── INTERFACES ───────────────────────────────────────────────────
 
@@ -67,12 +69,78 @@ export interface DirectorState {
   commitDenialCounts: Map<string, number>;
 }
 
+// ─── STRUCTURED TASK MAP RESPONSE ─────────────────────────────────
+
+interface DirectorTaskMapResponse {
+  thinking: string;
+  tasks: Array<{
+    assignedTo: string;
+    instruction: string;
+    operationType: OperationType;
+    dependsOn: string[];
+    outputFile?: string | null;
+  }>;
+}
+
+// ─── TASK MAP JSON PARSER ─────────────────────────────────────────
+
+/**
+ * Extracts a structured DirectorBob task map response from raw model output.
+ * Uses the same robust bracket-depth extraction as the agent response parser —
+ * handles markdown fences, preambles, and malformed JSON gracefully.
+ * Returns null if extraction fails — triggers retry or fallback.
+ */
+function parseTaskMapResponse(rawResponse: string): DirectorTaskMapResponse | null {
+  let jsonStr = rawResponse.trim();
+
+  // ─── Strip markdown code fences ────────────────────────────────
+  const fencedMatch = jsonStr.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (fencedMatch) {
+    jsonStr = fencedMatch[1].trim();
+  }
+
+  // ─── Find JSON object boundaries via bracket depth ─────────────
+  const firstBrace = jsonStr.indexOf('{');
+  if (firstBrace === -1) return null;
+
+  let depth = 0;
+  let lastBrace = -1;
+  for (let i = firstBrace; i < jsonStr.length; i++) {
+    if (jsonStr[i] === '{') depth++;
+    if (jsonStr[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        lastBrace = i;
+        break;
+      }
+    }
+  }
+
+  if (lastBrace === -1) return null;
+
+  const candidate = jsonStr.slice(firstBrace, lastBrace + 1);
+
+  try {
+    const parsed = JSON.parse(candidate);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    if (!Array.isArray(parsed.tasks) || parsed.tasks.length === 0) return null;
+
+    return {
+      thinking: typeof parsed.thinking === 'string' ? parsed.thinking : '',
+      tasks: parsed.tasks,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ─── PROJECT CONTEXT ──────────────────────────────────────────────
 
 function buildDirectorProjectContext(cwd: string): {
   existingFiles: string;
   hasTests: boolean;
   fileAssessment: string;
+  fileExistsMap: Record<string, boolean>;
 } {
   const summaries = loadSummaries(cwd);
   const existingFiles = summaries
@@ -88,6 +156,8 @@ function buildDirectorProjectContext(cwd: string): {
   const hasTests = hasVitest || hasJest;
 
   const assessmentLines: string[] = [];
+  const fileExistsMap: Record<string, boolean> = {};
+
   if (summaries) {
     for (const filePath of Object.keys(summaries).slice(0, 15)) {
       const absolutePath = path.join(cwd, filePath);
@@ -98,18 +168,22 @@ function buildDirectorProjectContext(cwd: string): {
         const isPlaceholder =
           content.includes('// file content here') ||
           content.includes('// TODO implement');
+
         if (isEmpty || isPlaceholder) {
           assessmentLines.push(`❌ EMPTY: ${filePath}`);
+          fileExistsMap[filePath] = false;
         } else {
           assessmentLines.push(`✅ EXISTS (${lines} lines): ${filePath}`);
+          fileExistsMap[filePath] = true;
         }
       } else {
         assessmentLines.push(`🔲 MISSING: ${filePath}`);
+        fileExistsMap[filePath] = false;
       }
     }
   }
 
-  return { existingFiles, hasTests, fileAssessment: assessmentLines.join('\n') };
+  return { existingFiles, hasTests, fileAssessment: assessmentLines.join('\n'), fileExistsMap };
 }
 
 // ─── TASK MAP GENERATION ──────────────────────────────────────────
@@ -125,11 +199,13 @@ export async function generateTaskMap(
   'createdAt' | 'startedAt' | 'completedAt' | 'notes'>[]> {
 
   const agentList = agents.map(a => `${a.name}: ${a.task}`).join('\n');
-  const { existingFiles, hasTests, fileAssessment } = buildDirectorProjectContext(cwd);
+  const { existingFiles, hasTests, fileAssessment, fileExistsMap } = buildDirectorProjectContext(cwd);
 
-  const prompt = `You are DirectorBob — a senior engineering lead.
+  const systemPrompt = `You are DirectorBob — a senior engineering lead.
+You MUST respond with ONLY valid JSON matching the exact schema provided.
+No markdown. No explanation before or after the JSON object.`;
 
-MISSION: ${missionDescription}
+  const userPrompt = `MISSION: ${missionDescription}
 
 AGENTS:
 ${agentList}
@@ -140,88 +216,81 @@ ${fileAssessment || 'No assessment available — project may not be indexed.'}
 ALL EXISTING FILES:
 ${existingFiles}
 
-CRITICAL RULES:
+RULES:
 1. Generate 3 to 6 specific, actionable tasks.
 2. Each task must reference EXACT file paths.
-3. For files marked ✅ EXISTS — agents must make SURGICAL changes only. They must NOT rewrite or gut these files.
+3. For files marked ✅ EXISTS — write instructions as "ADD [specific thing] to [file]". Never "refactor" or "rewrite".
 4. For files marked ❌ EMPTY or 🔲 MISSING — agents should create or fill them.
 5. ${hasTests ? 'Test tasks allowed.' : 'NO test tasks — no test framework configured.'}
 6. Agent names must NOT include @ symbol.
 7. dependsOn uses t1, t2, t3 format.
+8. operationType must be one of: CREATE, PATCH, REFACTOR, REPLACE
+   - CREATE: file does not exist yet
+   - PATCH: add or change a specific function or block in existing file
+   - REFACTOR: structural change that preserves all exports
+   - REPLACE: full rewrite — only for empty or placeholder files
 
-Respond with ONLY a valid JSON array. No explanation. No markdown:
-[{"assignedTo":"agentName","instruction":"specific instruction with exact file path","dependsOn":[]},...]`;
+Respond with ONLY this JSON structure:
+{
+  "thinking": "<your reasoning about task decomposition — 2-3 sentences>",
+  "tasks": [
+    {
+      "assignedTo": "agentName",
+      "instruction": "specific instruction referencing exact file path",
+      "operationType": "CREATE|PATCH|REFACTOR|REPLACE",
+      "dependsOn": []
+    }
+  ]
+}`;
+
+  const messages: LocalChatMessage[] = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt },
+  ];
+
+  // ─── Attempt 1 ────────────────────────────────────────────────
+  let parsed: DirectorTaskMapResponse | null = null;
 
   try {
-    const messages: LocalChatMessage[] = [
-      {
-        role: 'system',
-        content: 'You are DirectorBob. Return ONLY a valid JSON array. No markdown. No explanation. Agent names must NOT include @ symbol.',
-      },
-      { role: 'user', content: prompt },
-    ];
-
     const rawResponse = await callLocalModel(localEndpoint, messages);
     const responseText =
       typeof rawResponse === 'object' && rawResponse.text
         ? rawResponse.text
         : (rawResponse as unknown as string);
 
-    let rawTasks: any[] | null = null;
+    parsed = parseTaskMapResponse(responseText);
 
+    if (parsed) {
+      console.log(`[DIRECTORBOB] Thinking: ${parsed.thinking.slice(0, 100)}...`);
+    }
+  } catch { }
+
+  // ─── Attempt 2 — retry once if first attempt failed ───────────
+  if (!parsed) {
+    console.error(`[DIRECTORBOB] Task map attempt 1 failed — retrying...`);
     try {
-      const trimmed = responseText.trim();
-      if (trimmed.startsWith('[')) rawTasks = JSON.parse(trimmed);
+      const retryMessages: LocalChatMessage[] = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt + '\n\nIMPORTANT: Your previous response was not valid JSON. Respond with ONLY the JSON object. No text before or after it.' },
+      ];
+
+      const retryResponse = await callLocalModel(localEndpoint, retryMessages);
+      const retryText =
+        typeof retryResponse === 'object' && retryResponse.text
+          ? retryResponse.text
+          : (retryResponse as unknown as string);
+
+      parsed = parseTaskMapResponse(retryText);
     } catch { }
+  }
 
-    if (!rawTasks) {
-      const jsonMatch = responseText.match(/\[[\s\S]*?\]/);
-      if (jsonMatch) { try { rawTasks = JSON.parse(jsonMatch[0]); } catch { } }
-    }
-
-    if (!rawTasks) {
-      const startIdx = responseText.indexOf('[');
-      if (startIdx !== -1) {
-        let attempt = responseText.slice(startIdx);
-        if (!attempt.trim().endsWith(']')) attempt = attempt + ']';
-        try { rawTasks = JSON.parse(attempt); } catch { }
-      }
-    }
-
-    if (!rawTasks || !Array.isArray(rawTasks) || rawTasks.length === 0) {
-      throw new Error('Invalid task map response from model.');
-    }
-
-    return rawTasks.map((t: any) => {
-      const deps = (t.dependsOn || [])
-        .map((dep: string) => {
-          const match = dep.match(/t(\d+)/i);
-          if (match) {
-            const depIdx = parseInt(match[1]) - 1;
-            return depIdx >= 0 && depIdx < rawTasks!.length
-              ? `__TASK_${depIdx}__`
-              : null;
-          }
-          return null;
-        })
-        .filter(Boolean);
-
-      return {
-        assignedTo: (t.assignedTo || '').replace(/^@+/, ''),
-        instruction: t.instruction,
-        dependsOn: deps,
-        outputFile: t.outputFile || null,
-        satisfactionTarget: inferSatisfactionTarget(t.instruction || ''),
-        stagnationLimit: inferStagnationLimit(t.instruction || ''),
-        directorLimit: DEFAULT_DIRECTOR_LIMIT,
-      };
-    });
-
-  } catch (error: any) {
-    console.error(`[DIRECTORBOB] Task map failed: ${error.message}`);
+  // ─── Fallback — generic tasks if both attempts failed ─────────
+  if (!parsed) {
+    console.error(`[DIRECTORBOB] Task map failed after retry — using fallback.`);
     return agents.map((agent, idx) => ({
       assignedTo: agent.name.replace(/^@+/, ''),
       instruction: `${agent.task}. Context: ${missionDescription}. Make surgical changes only.`,
+      operationType: 'CREATE' as OperationType,
       dependsOn: idx > 0 ? [`__TASK_${idx - 1}__`] : [],
       outputFile: null,
       satisfactionTarget: 75,
@@ -229,6 +298,45 @@ Respond with ONLY a valid JSON array. No explanation. No markdown:
       directorLimit: DEFAULT_DIRECTOR_LIMIT,
     }));
   }
+
+  // ─── Map parsed tasks to AgentTask shape ──────────────────────
+  return parsed.tasks.map((t, idx) => {
+    const deps = (t.dependsOn || [])
+      .map((dep: string) => {
+        const match = dep.match(/t(\d+)/i);
+        if (match) {
+          const depIdx = parseInt(match[1]) - 1;
+          return depIdx >= 0 && depIdx < parsed!.tasks.length
+            ? `__TASK_${depIdx}__`
+            : null;
+        }
+        return null;
+      })
+      .filter(Boolean);
+
+    // ─── Validate + infer operation type ────────────────────────
+    const instructionLower = (t.instruction || '').toLowerCase();
+    const mentionedFile = Object.keys(fileExistsMap).find(f =>
+      instructionLower.includes(f.toLowerCase())
+    );
+    const fileExists = mentionedFile ? fileExistsMap[mentionedFile] : false;
+
+    const operationType: OperationType =
+      (['CREATE', 'PATCH', 'REFACTOR', 'REPLACE'].includes(t.operationType))
+        ? t.operationType
+        : inferOperationType(t.instruction || '', fileExists);
+
+    return {
+      assignedTo: (t.assignedTo || '').replace(/^@+/, ''),
+      instruction: t.instruction,
+      operationType,
+      dependsOn: deps,
+      outputFile: t.outputFile || null,
+      satisfactionTarget: inferSatisfactionTarget(t.instruction || ''),
+      stagnationLimit: inferStagnationLimit(t.instruction || ''),
+      directorLimit: DEFAULT_DIRECTOR_LIMIT,
+    };
+  });
 }
 
 // ─── DIRECTOR INTERVENTION ────────────────────────────────────────
@@ -254,6 +362,7 @@ export async function directorIntervene(
   const prompt = `You are DirectorBob. @${stuckAgent.name} is stagnating.
 
 STUCK TASK: ${task.instruction}
+OPERATION TYPE: ${task.operationType}
 AGENT: ${stuckAgent.name} — ${stuckAgent.task}
 LAST SCORE: ${task.lastSatisfactionScore}% / TARGET: ${task.satisfactionTarget}%
 ATTEMPTS: ${task.attemptCount}
@@ -264,7 +373,8 @@ ${task.notes.slice(-3).join('\n')}
 TEAM: ${agentSummaries}
 EXISTING FILES: ${existingFiles}
 
-Give ONE specific directive. Reference actual file paths. 2 sentences max. Plain text only.`;
+Give ONE specific directive. Reference actual file paths. 2 sentences max. Plain text only.
+${task.operationType === 'PATCH' ? 'Remind the agent: use readFile tool to read the target section first, then output ONLY the patched file in your JSON response files array — do NOT rewrite the entire file.' : ''}`;
 
   try {
     const messages: LocalChatMessage[] = [
@@ -277,7 +387,7 @@ Give ONE specific directive. Reference actual file paths. 2 sentences max. Plain
       : (rawResponse as unknown as string);
     return note.trim().split('\n')[0].slice(0, 200);
   } catch {
-    return `Use the // File: header format to write the actual complete file content now. Make surgical changes only.`;
+    return `Use the JSON response format to write the complete file content now. Make surgical changes only.`;
   }
 }
 
@@ -310,7 +420,8 @@ async function handlePendingCommits(
       commit.agentName,
       commit.filesChanged,
       cwd,
-      localEndpoint
+      localEndpoint,
+      task?.operationType
     );
 
     saveCommitReview(review, commit.missionId, commit.taskId, cwd);
@@ -324,7 +435,6 @@ async function handlePendingCommits(
         clearPendingCommit(commit.id, cwd);
         emit('done', `DirectorBob approved ✅ committed: ${result.commit?.slice(0, 7)} — ${commit.message}`);
 
-        // Reset denial count on successful commit
         state.commitDenialCounts.delete(commit.taskId);
 
         if (review.filesReviewed.some(f => f.verdict === 'WARN')) {
@@ -342,11 +452,9 @@ async function handlePendingCommits(
       }
 
     } else {
-      // ─── DENY: restore files + track denial count ─────────────
       const { restored, failed } = restoreDeniedFiles(review, cwd);
       clearPendingCommit(commit.id, cwd);
 
-      // Increment denial count for this task
       const denials = (state.commitDenialCounts.get(commit.taskId) || 0) + 1;
       state.commitDenialCounts.set(commit.taskId, denials);
 
@@ -360,7 +468,6 @@ async function handlePendingCommits(
       }
 
       if (denials >= MAX_COMMIT_DENIALS) {
-        // ─── Max denials hit → surface to user, do NOT reopen ───
         if (task) {
           updateTaskStatus(mission, task.id, 'stagnated', cwd);
           addTaskNote(
@@ -381,12 +488,10 @@ async function handlePendingCommits(
         );
 
       } else if (review.revisionNote && task) {
-        // ─── Under limit → inject revision note and reopen ───────
         const revisionMessage = `COMMIT DENIED (${denials}/${MAX_COMMIT_DENIALS}): ${review.revisionNote}`;
         addTaskNote(mission, task.id, revisionMessage, cwd);
         emit('response', `DirectorBob → @${commit.agentName}: ${review.revisionNote}`);
 
-        // Reopen task with feedback
         task.status = 'pending';
         task.lastSatisfactionScore = null;
         saveMission(mission, cwd);
@@ -480,7 +585,7 @@ export async function runAutonomousLoop(
       }
 
       updateTaskStatus(mission, task.id, 'running', cwd);
-      emit('thinking', `Dispatching @${agent.name} → ${task.instruction.slice(0, 50)}...`);
+      emit('thinking', `Dispatching @${agent.name} → [${task.operationType}] ${task.instruction.slice(0, 50)}...`);
 
       if (state.satisfactionOverrides[agent.name] !== undefined) {
         task.satisfactionTarget = state.satisfactionOverrides[agent.name];

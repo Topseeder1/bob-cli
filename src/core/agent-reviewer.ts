@@ -1,8 +1,7 @@
-// File: src/core/agent-reviewer.ts
-
 import { LocalChatMessage } from '../ai/providers/local.js';
 import { callLocalModel } from '../ai/providers/local.js';
 import { getRelevantFileContents } from './file-retrieval.js';
+import { OperationType } from './agent-queue.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -33,21 +32,15 @@ export interface FileChange {
 
 // ─── BACKUP FINDER ────────────────────────────────────────────────
 
-/**
- * Finds the most recent backup of a file in .bob-backups/
- */
 function findMostRecentBackup(filePath: string, cwd: string): string | null {
   const backupDir = path.join(cwd, '.bob-backups');
   if (!fs.existsSync(backupDir)) return null;
-
   const safeName = filePath.replace(/[\/\\]/g, '_');
-
   try {
     const backups = fs.readdirSync(backupDir)
       .filter(f => f.startsWith(safeName) && f.endsWith('.bak'))
       .sort()
-      .reverse(); // most recent first
-
+      .reverse();
     if (backups.length === 0) return null;
     return path.join(backupDir, backups[0]);
   } catch {
@@ -55,46 +48,188 @@ function findMostRecentBackup(filePath: string, cwd: string): string | null {
   }
 }
 
+// ─── PROGRAMMATIC VALIDATORS ──────────────────────────────────────
+
+interface ProgrammaticCheck {
+  passed: boolean;
+  reason: string | null;
+}
+
+function countImports(content: string): number {
+  return (content.match(/^import\s+/gm) || []).length;
+}
+
+function extractExports(content: string): string[] {
+  const matches = content.match(
+    /^export\s+(?:default\s+)?(?:function|class|const|let|var|type|interface|enum|async\s+function)\s+(\w+)/gm
+  ) || [];
+  return matches.map(m => {
+    const nameMatch = m.match(/\s(\w+)\s*$/);
+    return nameMatch ? nameMatch[1] : m;
+  });
+}
+
+function programmaticCheck(
+  originalContent: string,
+  currentContent: string,
+  operationType: OperationType,
+  isNewFile: boolean
+): ProgrammaticCheck {
+  if (isNewFile) return { passed: true, reason: null };
+
+  const originalLines = originalContent.split('\n').length;
+  const currentLines = currentContent.split('\n').length;
+  const reductionRatio = currentLines / originalLines;
+
+  const minRatios: Record<OperationType, number> = {
+    PATCH:    0.85,
+    REFACTOR: 0.70,
+    REPLACE:  0.10,
+    CREATE:   0.0,
+  };
+
+  const minRatio = minRatios[operationType] ?? 0.80;
+
+  if (reductionRatio < minRatio) {
+    return {
+      passed: false,
+      reason: `File reduced to ${Math.round(reductionRatio * 100)}% of original (minimum ${Math.round(minRatio * 100)}% for ${operationType}). Agent likely gutted the file instead of making a targeted change.`,
+    };
+  }
+
+  if (operationType === 'PATCH' || operationType === 'REFACTOR') {
+    const originalExports = extractExports(originalContent);
+    const currentExports = extractExports(currentContent);
+    const missingExports = originalExports.filter(e => !currentExports.includes(e));
+
+    if (missingExports.length > 0) {
+      return {
+        passed: false,
+        reason: `Missing exports after ${operationType}: ${missingExports.join(', ')}. These must be preserved.`,
+      };
+    }
+  }
+
+  if (operationType === 'PATCH') {
+    const originalImports = countImports(originalContent);
+    const currentImports = countImports(currentContent);
+    const importDelta = Math.abs(currentImports - originalImports);
+
+    if (importDelta > 2) {
+      return {
+        passed: false,
+        reason: `Import count changed by ${importDelta} (${originalImports} → ${currentImports}). PATCH operations should add at most 2 imports.`,
+      };
+    }
+  }
+
+  return { passed: true, reason: null };
+}
+
+// ─── REVIEWER SYSTEM PROMPT ───────────────────────────────────────
+
+const REVIEWER_SYSTEM_PROMPT = `You are DirectorBob in CODE REVIEW MODE.
+
+Your role is to evaluate whether a code change is safe to commit.
+You are an experienced senior engineer reviewing a junior agent's work.
+
+You are SKEPTICAL BY DEFAULT. Your job is to catch problems.
+
+Evaluate against three criteria:
+1. CORRECTNESS — Does the change accomplish what the task asked for?
+2. SAFETY — Does the change preserve existing functionality without breaking anything?
+3. FIT — Does the change follow the project's existing patterns and conventions?
+
+Respond with ONLY this exact JSON format on a single line:
+{"verdict":"APPROVE","reason":"one paragraph","revisionNote":null}
+
+VERDICT definitions:
+- APPROVE: Change is correct, safe, and fits the project.
+- DENY: Change has a critical problem. Agent must revise.
+- WARN: Minor concerns but acceptable. Commit with caution.`;
+
+// ─── REVIEW PROMPT BUILDER ────────────────────────────────────────
+
+function buildFileReviewPrompt(
+  taskInstruction: string,
+  filePath: string,
+  originalContent: string,
+  currentContent: string,
+  projectContext: string,
+  isNewFile: boolean,
+  operationType: OperationType
+): string {
+  const originalLines = originalContent.split('\n').length;
+  const currentLines = currentContent.split('\n').length;
+  const lineDiff = currentLines - originalLines;
+  const reductionPercent = originalLines > 0
+    ? Math.round(((originalLines - currentLines) / originalLines) * 100)
+    : 0;
+
+  return `TASK INSTRUCTION: ${taskInstruction}
+OPERATION TYPE: ${operationType}
+
+FILE: ${filePath}
+${isNewFile
+    ? 'STATUS: NEW FILE'
+    : `STATUS: MODIFIED (${originalLines} → ${currentLines} lines, ${lineDiff >= 0 ? '+' : ''}${lineDiff}${reductionPercent > 0 ? `, ${reductionPercent}% reduction` : ''})`
+  }
+
+${!isNewFile && originalContent
+    ? `ORIGINAL:\n\`\`\`\n${originalContent.slice(0, 3000)}${originalContent.length > 3000 ? '\n...(truncated)' : ''}\n\`\`\`\n`
+    : ''
+  }
+CURRENT:\n\`\`\`\n${currentContent.slice(0, 3000)}${currentContent.length > 3000 ? '\n...(truncated)' : ''}\n\`\`\`
+
+${projectContext ? `RELEVANT CONTEXT:\n${projectContext.slice(0, 1500)}\n` : ''}
+Respond with ONLY the JSON verdict on a single line.`;
+}
+
+// ─── REVIEW RESPONSE PARSER ───────────────────────────────────────
+
+function parseFileReviewResponse(
+  response: string,
+  filePath: string,
+  backupPath: string | null
+): FileReviewResult {
+  const jsonMatch = response.match(/\{[^}]*"verdict"[^}]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const verdict = (['APPROVE', 'DENY', 'WARN'] as const).includes(parsed.verdict)
+        ? parsed.verdict as 'APPROVE' | 'DENY' | 'WARN'
+        : 'WARN';
+      return { filePath, verdict, reason: parsed.reason || 'No reason provided.', backupPath };
+    } catch { }
+  }
+
+  const upper = response.toUpperCase();
+  let verdict: 'APPROVE' | 'DENY' | 'WARN' = 'WARN';
+  if (upper.includes('DENY')) verdict = 'DENY';
+  else if (upper.includes('APPROVE')) verdict = 'APPROVE';
+
+  return { filePath, verdict, reason: response.slice(0, 200).trim() || 'Review completed.', backupPath };
+}
+
 // ─── CORE REVIEW FUNCTION ─────────────────────────────────────────
 
-/**
- * DirectorBob's intelligent commit review system.
- *
- * Completely separate from agent execution — different persona,
- * different prompt structure, fresh context, auditor mindset.
- *
- * For each file changed:
- * 1. Reads the current file (what agent wrote)
- * 2. Reads the backup (what it looked like before)
- * 3. Uses two-step retrieval to understand project context
- * 4. Evaluates change against task instruction
- * 5. Returns structured APPROVE/DENY verdict per file and overall
- */
 export async function reviewCommit(
   taskInstruction: string,
   commitMessage: string,
   agentName: string,
   filesChanged: FileChange[],
   cwd: string,
-  localEndpoint: string
+  localEndpoint: string,
+  operationType?: OperationType
 ): Promise<CommitReview> {
 
   const fileReviews: FileReviewResult[] = [];
+  const opType: OperationType = operationType || 'PATCH';
 
-  // ─── Review each changed file individually ─────────────────────
   for (const fileChange of filesChanged) {
     const absolutePath = path.join(cwd, fileChange.filePath);
 
-    // ─── Read current file (what agent wrote) ─────────────────
-    let currentContent = '';
-    if (fs.existsSync(absolutePath)) {
-      try {
-        currentContent = fs.readFileSync(absolutePath, 'utf-8');
-      } catch {
-        currentContent = '[Could not read current file]';
-      }
-    } else {
-      // File was deleted or never written
+    if (!fs.existsSync(absolutePath)) {
       fileReviews.push({
         filePath: fileChange.filePath,
         verdict: 'DENY',
@@ -104,7 +239,13 @@ export async function reviewCommit(
       continue;
     }
 
-    // ─── Read backup (original before agent changes) ───────────
+    let currentContent = '';
+    try {
+      currentContent = fs.readFileSync(absolutePath, 'utf-8');
+    } catch {
+      currentContent = '[Could not read current file]';
+    }
+
     const backupPath = fileChange.backupPath || findMostRecentBackup(fileChange.filePath, cwd);
     let originalContent = '';
     let isNewFile = true;
@@ -118,7 +259,21 @@ export async function reviewCommit(
       }
     }
 
-    // ─── Two-step retrieval for project context ─────────────────
+    // ─── Programmatic check first — deterministic, no LLM ──────
+    if (!isNewFile && originalContent && originalContent !== '[Could not read backup]') {
+      const check = programmaticCheck(originalContent, currentContent, opType, isNewFile);
+      if (!check.passed) {
+        fileReviews.push({
+          filePath: fileChange.filePath,
+          verdict: 'DENY',
+          reason: check.reason!,
+          backupPath,
+        });
+        continue;
+      }
+    }
+
+    // ─── RAG context ────────────────────────────────────────────
     let projectContext = '';
     try {
       const retrieval = await getRelevantFileContents(
@@ -126,29 +281,23 @@ export async function reviewCommit(
         localEndpoint
       );
       projectContext = retrieval.fileContents;
-    } catch { /* non-fatal */ }
+    } catch { }
 
-    // ─── Build review prompt ────────────────────────────────────
+    // ─── LLM review ─────────────────────────────────────────────
     const reviewPrompt = buildFileReviewPrompt(
       taskInstruction,
       fileChange.filePath,
       originalContent,
       currentContent,
       projectContext,
-      isNewFile
+      isNewFile,
+      opType
     );
 
-    // ─── Call model in reviewer mode ────────────────────────────
     try {
       const messages: LocalChatMessage[] = [
-        {
-          role: 'system',
-          content: REVIEWER_SYSTEM_PROMPT,
-        },
-        {
-          role: 'user',
-          content: reviewPrompt,
-        },
+        { role: 'system', content: REVIEWER_SYSTEM_PROMPT },
+        { role: 'user', content: reviewPrompt },
       ];
 
       const rawResponse = await callLocalModel(localEndpoint, messages);
@@ -157,11 +306,9 @@ export async function reviewCommit(
           ? rawResponse.text
           : (rawResponse as unknown as string);
 
-      const fileReview = parseFileReviewResponse(responseText, fileChange.filePath, backupPath);
-      fileReviews.push(fileReview);
+      fileReviews.push(parseFileReviewResponse(responseText, fileChange.filePath, backupPath));
 
     } catch (error: any) {
-      // If review fails, default to WARN — don't block commit but flag it
       fileReviews.push({
         filePath: fileChange.filePath,
         verdict: 'WARN',
@@ -171,9 +318,9 @@ export async function reviewCommit(
     }
   }
 
-  // ─── Build overall verdict ─────────────────────────────────────
-  const denied = fileReviews.filter(f => f.verdict === 'DENY');
-  const warned = fileReviews.filter(f => f.verdict === 'WARN');
+  // ─── Overall verdict ──────────────────────────────────────────
+  const denied  = fileReviews.filter(f => f.verdict === 'DENY');
+  const warned  = fileReviews.filter(f => f.verdict === 'WARN');
   const approved = fileReviews.filter(f => f.verdict === 'APPROVE');
 
   let overallVerdict: 'APPROVE' | 'DENY';
@@ -183,15 +330,13 @@ export async function reviewCommit(
   if (denied.length > 0) {
     overallVerdict = 'DENY';
     overallReason = `${denied.length} file(s) failed review: ${denied.map(f => f.filePath).join(', ')}`;
-    revisionNote = denied.map(f =>
-      `${f.filePath}: ${f.reason}`
-    ).join('\n');
+    revisionNote = denied.map(f => `${f.filePath}: ${f.reason}`).join('\n');
   } else if (warned.length > 0) {
     overallVerdict = 'APPROVE';
-    overallReason = `${approved.length} file(s) approved. ${warned.length} file(s) have warnings — review recommended.`;
+    overallReason = `${approved.length} file(s) approved. ${warned.length} file(s) have warnings.`;
   } else {
     overallVerdict = 'APPROVE';
-    overallReason = `All ${approved.length} file(s) passed review. Changes align with task instruction.`;
+    overallReason = `All ${approved.length} file(s) passed review.`;
   }
 
   return {
@@ -203,125 +348,8 @@ export async function reviewCommit(
   };
 }
 
-// ─── REVIEWER SYSTEM PROMPT ───────────────────────────────────────
-// Completely separate from STANDARD_STYLE_PROMPT used by agents.
-// Auditor mindset — skeptical, precise, structured output only.
-
-const REVIEWER_SYSTEM_PROMPT = `You are DirectorBob in CODE REVIEW MODE.
-
-Your role is to evaluate whether a code change is safe to commit.
-You are an experienced senior engineer reviewing a junior agent's work.
-
-You are SKEPTICAL BY DEFAULT. Your job is to catch problems.
-
-You evaluate against three criteria:
-1. CORRECTNESS — Does the change accomplish what the task asked for?
-2. SAFETY — Does the change preserve existing functionality without breaking anything?
-3. FIT — Does the change follow the project's existing patterns and conventions?
-
-You respond with ONLY this exact JSON format on a single line:
-{"verdict":"APPROVE"|"DENY"|"WARN","reason":"one paragraph","revisionNote":"specific fix instruction or null"}
-
-VERDICT definitions:
-- APPROVE: Change is correct, safe, and fits the project. Commit it.
-- DENY: Change has a critical problem. Do not commit. Agent must revise.
-- WARN: Change has minor concerns but is acceptable. Commit with caution.
-
-You MUST DENY if:
-- The file was substantially rewritten when only a small change was needed
-- Existing imports or exports were removed without being replaced
-- The change breaks obvious functionality
-- The file is shorter than the original by more than 30% with no clear justification
-
-You MUST APPROVE if:
-- The change correctly implements the task
-- Existing code structure is preserved
-- New code fits the project's patterns`;
-
-// ─── REVIEW PROMPT BUILDER ────────────────────────────────────────
-
-function buildFileReviewPrompt(
-  taskInstruction: string,
-  filePath: string,
-  originalContent: string,
-  currentContent: string,
-  projectContext: string,
-  isNewFile: boolean
-): string {
-  const originalLines = originalContent.split('\n').length;
-  const currentLines = currentContent.split('\n').length;
-  const lineDiff = currentLines - originalLines;
-  const reductionPercent = originalLines > 0
-    ? Math.round(((originalLines - currentLines) / originalLines) * 100)
-    : 0;
-
-  return `TASK INSTRUCTION:
-${taskInstruction}
-
-FILE BEING REVIEWED: ${filePath}
-${isNewFile ? 'STATUS: NEW FILE (no original to compare)' : `STATUS: MODIFIED (${originalLines} → ${currentLines} lines, ${lineDiff >= 0 ? '+' : ''}${lineDiff} change${reductionPercent > 0 ? `, ${reductionPercent}% reduction` : ''})`}
-
-${!isNewFile && originalContent ? `ORIGINAL FILE (before agent changes):
-\`\`\`
-${originalContent.slice(0, 4000)}${originalContent.length > 4000 ? '\n... (truncated)' : ''}
-\`\`\`
-
-` : ''}CURRENT FILE (what agent wrote):
-\`\`\`
-${currentContent.slice(0, 4000)}${currentContent.length > 4000 ? '\n... (truncated)' : ''}
-\`\`\`
-
-${projectContext ? `RELEVANT PROJECT CONTEXT:
-${projectContext.slice(0, 2000)}
-
-` : ''}Evaluate this change. Respond with ONLY the JSON verdict on a single line.`;
-}
-
-// ─── REVIEW RESPONSE PARSER ───────────────────────────────────────
-
-function parseFileReviewResponse(
-  response: string,
-  filePath: string,
-  backupPath: string | null
-): FileReviewResult {
-  // Try to extract JSON from response
-  const jsonMatch = response.match(/\{[^}]*"verdict"[^}]*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      const verdict = ['APPROVE', 'DENY', 'WARN'].includes(parsed.verdict)
-        ? parsed.verdict as 'APPROVE' | 'DENY' | 'WARN'
-        : 'WARN';
-
-      return {
-        filePath,
-        verdict,
-        reason: parsed.reason || 'No reason provided.',
-        backupPath,
-      };
-    } catch { }
-  }
-
-  // If JSON parse fails, look for APPROVE/DENY/WARN keywords
-  const upper = response.toUpperCase();
-  let verdict: 'APPROVE' | 'DENY' | 'WARN' = 'WARN';
-  if (upper.includes('DENY')) verdict = 'DENY';
-  else if (upper.includes('APPROVE')) verdict = 'APPROVE';
-
-  return {
-    filePath,
-    verdict,
-    reason: response.slice(0, 200).trim() || 'Review completed.',
-    backupPath,
-  };
-}
-
 // ─── RESTORE DENIED FILES ─────────────────────────────────────────
 
-/**
- * Restores files that were DENIED in a commit review.
- * Uses the backup from .bob-backups/ to restore the original.
- */
 export function restoreDeniedFiles(
   review: CommitReview,
   cwd: string
@@ -331,18 +359,13 @@ export function restoreDeniedFiles(
 
   for (const fileReview of review.filesReviewed) {
     if (fileReview.verdict !== 'DENY') continue;
-    if (!fileReview.backupPath) {
-      failed.push(fileReview.filePath);
-      continue;
-    }
+    if (!fileReview.backupPath) { failed.push(fileReview.filePath); continue; }
 
     try {
       const absolutePath = path.join(cwd, fileReview.filePath);
       if (fs.existsSync(fileReview.backupPath)) {
-        // Ensure directory exists
         const dir = path.dirname(absolutePath);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
         fs.copyFileSync(fileReview.backupPath, absolutePath);
         restored.push(fileReview.filePath);
       } else {
@@ -367,14 +390,13 @@ export function saveCommitReview(
   const projectName = path.basename(cwd);
   const reviewDir = path.join(BOB_DIR, 'projects', projectName, 'agents', 'commit-reviews');
   if (!fs.existsSync(reviewDir)) fs.mkdirSync(reviewDir, { recursive: true });
-  const reviewFile = path.join(reviewDir, `${taskId}.json`);
-  fs.writeFileSync(reviewFile, JSON.stringify(review, null, 2));
+  fs.writeFileSync(
+    path.join(reviewDir, `${taskId}.json`),
+    JSON.stringify(review, null, 2)
+  );
 }
 
-export function loadCommitReview(
-  taskId: string,
-  cwd: string
-): CommitReview | null {
+export function loadCommitReview(taskId: string, cwd: string): CommitReview | null {
   const projectName = path.basename(cwd);
   const reviewFile = path.join(
     BOB_DIR, 'projects', projectName, 'agents', 'commit-reviews', `${taskId}.json`

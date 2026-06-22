@@ -25,6 +25,7 @@ import {
   renderMissionComplete,
   renderExecutionEvent,
   renderPostMissionFeedback,
+  renderPostMissionCommitPrompt,
   handleRunCommand,
 } from '../ui/agent-run-renderer.js';
 import { ExecutionEvent } from '../core/agent-executor.js';
@@ -47,6 +48,7 @@ export function registerAgentRunCommand(program: Command): void {
     .option('--dry-run', 'Preview task map without executing')
     .option('--resume', 'Resume the last active mission')
     .option('--no-feedback', 'Skip post-mission feedback collection')
+    .option('--no-commit', 'Skip post-mission commit prompt')
     .action(async (
       missionArgs: string[],
       options: {
@@ -56,6 +58,7 @@ export function registerAgentRunCommand(program: Command): void {
         dryRun?: boolean;
         resume?: boolean;
         feedback?: boolean;
+        commit?: boolean;
       }
     ) => {
       const config = getConfig();
@@ -107,7 +110,6 @@ export function registerAgentRunCommand(program: Command): void {
         }
         console.log('');
         console.log(AMBER(`  🔄 Resuming mission: ${existingMission.description.slice(0, 50)}...`));
-        // On resume — keep pending commits (they belong to this mission)
         await executeMission(existingMission, agents, cwd, config.localEndpoint!, options);
         return;
       }
@@ -131,8 +133,6 @@ export function registerAgentRunCommand(program: Command): void {
       }
 
       // ─── Clear pending commits from previous sessions ──────────
-      // Fresh mission = clean slate. Leftover commits from dead
-      // sessions should not fire at the start of a new mission.
       clearAllPendingCommits(cwd);
 
       // ─── Generate task map ─────────────────────────────────────
@@ -253,6 +253,7 @@ async function executeMission(
     userInjections: [],
     satisfactionOverrides: {},
     pendingCommitApproval: null,
+    commitDenialCounts: new Map(),
   };
 
   mission.status = 'running';
@@ -291,6 +292,11 @@ async function executeMission(
 
     if (result.completed) {
       renderMissionComplete(result.mission);
+
+      // ─── Post-mission commit prompt ─────────────────────────
+      if (options.commit !== false) {
+        await renderPostMissionCommitPrompt(result.mission, cwd);
+      }
 
       // ─── Post-mission feedback ──────────────────────────────
       if (options.feedback !== false) {

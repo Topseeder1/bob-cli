@@ -10,7 +10,7 @@
     "bob": "./dist/bob.js"
   },
   "scripts": {
-    "build": "tsup bin/bob.ts --format esm --out-dir dist",
+    "build": "tsup",
     "dev": "node --loader ts-node/esm bin/bob.ts",
     "test": "vitest"
   },
