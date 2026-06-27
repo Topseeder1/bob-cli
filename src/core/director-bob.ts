@@ -36,9 +36,11 @@ import { loadSummaries } from './project-map.js';
 import {
   loadPendingCommits,
   clearPendingCommit,
+  clearPendingCommitsForTask,
 } from './agent-tools.js';
 import {
   reviewCommit,
+  reviewTaskCompletion,
   restoreDeniedFiles,
   saveCommitReview,
 } from './agent-reviewer.js';
@@ -84,22 +86,14 @@ interface DirectorTaskMapResponse {
 
 // ─── TASK MAP JSON PARSER ─────────────────────────────────────────
 
-/**
- * Extracts a structured DirectorBob task map response from raw model output.
- * Uses the same robust bracket-depth extraction as the agent response parser —
- * handles markdown fences, preambles, and malformed JSON gracefully.
- * Returns null if extraction fails — triggers retry or fallback.
- */
 function parseTaskMapResponse(rawResponse: string): DirectorTaskMapResponse | null {
   let jsonStr = rawResponse.trim();
 
-  // ─── Strip markdown code fences ────────────────────────────────
   const fencedMatch = jsonStr.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
   if (fencedMatch) {
     jsonStr = fencedMatch[1].trim();
   }
 
-  // ─── Find JSON object boundaries via bracket depth ─────────────
   const firstBrace = jsonStr.indexOf('{');
   if (firstBrace === -1) return null;
 
@@ -109,10 +103,7 @@ function parseTaskMapResponse(rawResponse: string): DirectorTaskMapResponse | nu
     if (jsonStr[i] === '{') depth++;
     if (jsonStr[i] === '}') {
       depth--;
-      if (depth === 0) {
-        lastBrace = i;
-        break;
-      }
+      if (depth === 0) { lastBrace = i; break; }
     }
   }
 
@@ -219,13 +210,13 @@ ${existingFiles}
 RULES:
 1. Generate 3 to 6 specific, actionable tasks.
 2. Each task must reference EXACT file paths.
-3. For files marked ✅ EXISTS — write instructions as "ADD [specific thing] to [file]". Never "refactor" or "rewrite".
+3. For files marked ✅ EXISTS — write instructions as "ADD [specific thing] to [file]". Never "refactor" or "rewrite". Never generate CREATE tasks for files that already exist.
 4. For files marked ❌ EMPTY or 🔲 MISSING — agents should create or fill them.
 5. ${hasTests ? 'Test tasks allowed.' : 'NO test tasks — no test framework configured.'}
 6. Agent names must NOT include @ symbol.
 7. dependsOn uses t1, t2, t3 format.
 8. operationType must be one of: CREATE, PATCH, REFACTOR, REPLACE
-   - CREATE: file does not exist yet
+   - CREATE: file does not exist yet — NEVER use for files marked ✅ EXISTS
    - PATCH: add or change a specific function or block in existing file
    - REFACTOR: structural change that preserves all exports
    - REPLACE: full rewrite — only for empty or placeholder files
@@ -248,9 +239,9 @@ Respond with ONLY this JSON structure:
     { role: 'user', content: userPrompt },
   ];
 
-  // ─── Attempt 1 ────────────────────────────────────────────────
   let parsed: DirectorTaskMapResponse | null = null;
 
+  // ─── Attempt 1 ────────────────────────────────────────────────
   try {
     const rawResponse = await callLocalModel(localEndpoint, messages);
     const responseText =
@@ -259,32 +250,32 @@ Respond with ONLY this JSON structure:
         : (rawResponse as unknown as string);
 
     parsed = parseTaskMapResponse(responseText);
-
     if (parsed) {
       console.log(`[DIRECTORBOB] Thinking: ${parsed.thinking.slice(0, 100)}...`);
     }
   } catch { }
 
-  // ─── Attempt 2 — retry once if first attempt failed ───────────
+  // ─── Attempt 2 — retry once ───────────────────────────────────
   if (!parsed) {
     console.error(`[DIRECTORBOB] Task map attempt 1 failed — retrying...`);
     try {
       const retryMessages: LocalChatMessage[] = [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt + '\n\nIMPORTANT: Your previous response was not valid JSON. Respond with ONLY the JSON object. No text before or after it.' },
+        {
+          role: 'user',
+          content: userPrompt + '\n\nIMPORTANT: Your previous response was not valid JSON. Respond with ONLY the JSON object. No text before or after it.',
+        },
       ];
-
       const retryResponse = await callLocalModel(localEndpoint, retryMessages);
       const retryText =
         typeof retryResponse === 'object' && retryResponse.text
           ? retryResponse.text
           : (retryResponse as unknown as string);
-
       parsed = parseTaskMapResponse(retryText);
     } catch { }
   }
 
-  // ─── Fallback — generic tasks if both attempts failed ─────────
+  // ─── Fallback ─────────────────────────────────────────────────
   if (!parsed) {
     console.error(`[DIRECTORBOB] Task map failed after retry — using fallback.`);
     return agents.map((agent, idx) => ({
@@ -299,8 +290,7 @@ Respond with ONLY this JSON structure:
     }));
   }
 
-  // ─── Map parsed tasks to AgentTask shape ──────────────────────
-  return parsed.tasks.map((t, idx) => {
+  return parsed.tasks.map((t) => {
     const deps = (t.dependsOn || [])
       .map((dep: string) => {
         const match = dep.match(/t(\d+)/i);
@@ -314,7 +304,6 @@ Respond with ONLY this JSON structure:
       })
       .filter(Boolean);
 
-    // ─── Validate + infer operation type ────────────────────────
     const instructionLower = (t.instruction || '').toLowerCase();
     const mentionedFile = Object.keys(fileExistsMap).find(f =>
       instructionLower.includes(f.toLowerCase())
@@ -374,7 +363,7 @@ TEAM: ${agentSummaries}
 EXISTING FILES: ${existingFiles}
 
 Give ONE specific directive. Reference actual file paths. 2 sentences max. Plain text only.
-${task.operationType === 'PATCH' ? 'Remind the agent: use readFile tool to read the target section first, then output ONLY the patched file in your JSON response files array — do NOT rewrite the entire file.' : ''}`;
+${task.operationType === 'PATCH' ? 'Remind the agent: output the COMPLETE file with ONLY the targeted change in the JSON files array — do NOT write a partial file.' : ''}`;
 
   try {
     const messages: LocalChatMessage[] = [
@@ -387,11 +376,11 @@ ${task.operationType === 'PATCH' ? 'Remind the agent: use readFile tool to read 
       : (rawResponse as unknown as string);
     return note.trim().split('\n')[0].slice(0, 200);
   } catch {
-    return `Use the JSON response format to write the complete file content now. Make surgical changes only.`;
+    return `Output the complete file with only the targeted change in your JSON response files array. Make surgical changes only.`;
   }
 }
 
-// ─── INTELLIGENT COMMIT REVIEW ────────────────────────────────────
+// ─── HANDLE PENDING COMMITS ───────────────────────────────────────
 
 async function handlePendingCommits(
   cwd: string,
@@ -432,7 +421,10 @@ async function handlePendingCommits(
         const git = simpleGit(cwd);
         await git.add('.');
         const result = await git.commit(commit.message);
-        clearPendingCommit(commit.id, cwd);
+
+        // ─── Clear ALL pending commits for this task on approve ─
+        clearPendingCommitsForTask(commit.taskId, cwd);
+
         emit('done', `DirectorBob approved ✅ committed: ${result.commit?.slice(0, 7)} — ${commit.message}`);
 
         state.commitDenialCounts.delete(commit.taskId);
@@ -447,12 +439,13 @@ async function handlePendingCommits(
           );
         }
       } catch (e: any) {
-        clearPendingCommit(commit.id, cwd);
+        clearPendingCommitsForTask(commit.taskId, cwd);
         emit('error', `Commit failed after approval: ${e.message}`);
       }
 
     } else {
       const { restored, failed } = restoreDeniedFiles(review, cwd);
+
       clearPendingCommit(commit.id, cwd);
 
       const denials = (state.commitDenialCounts.get(commit.taskId) || 0) + 1;
@@ -533,6 +526,7 @@ export async function runAutonomousLoop(
 
   while (true) {
 
+    // ─── ABORT — check first, before anything else ────────────
     if (state.aborted) {
       mission.status = 'aborted';
       saveMission(mission, cwd);
@@ -544,12 +538,13 @@ export async function runAutonomousLoop(
       continue;
     }
 
-    if (activeExecutions.size === 0) {
+    // ─── FIXED: only process commits if NOT aborted ───────────
+    if (activeExecutions.size === 0 && !state.aborted) {
       await handlePendingCommits(cwd, localEndpoint, taskMap, mission, state, onEvent);
     }
 
     if (isMissionComplete(mission)) {
-      if (activeExecutions.size === 0) {
+      if (activeExecutions.size === 0 && !state.aborted) {
         await handlePendingCommits(cwd, localEndpoint, taskMap, mission, state, onEvent);
       }
       mission.status = 'completed';
@@ -602,16 +597,52 @@ export async function runAutonomousLoop(
       ).then(async (result) => {
         activeExecutions.delete(task.id);
 
+        // ─── Don't process results if aborted ──────────────
+        if (state.aborted) return result;
+
         if (result.isDone) {
-          updateTaskResult(
-            mission,
-            task.id,
+          emit('thinking', `DirectorBob reviewing @${agent.name}'s completed work...`);
+
+          const filesWritten = [
+            ...result.filesCreated.map(f => ({ filePath: f, isNew: true })),
+            ...result.filesModified.map(f => ({ filePath: f, isNew: false })),
+          ];
+
+          const completionReview = await reviewTaskCompletion(
+            task.instruction,
+            agent.name,
             result.response,
-            result.filesCreated,
-            result.filesModified,
-            cwd
+            filesWritten,
+            task.attemptCount,
+            cwd,
+            localEndpoint,
+            task.operationType
           );
-          emit('done', `@${agent.name} ✅ ${task.instruction.slice(0, 50)}`);
+
+          if (completionReview.verdict === 'APPROVED') {
+            updateTaskResult(
+              mission,
+              task.id,
+              result.response,
+              result.filesCreated,
+              result.filesModified,
+              cwd
+            );
+            emit('done', `DirectorBob ✅ approved @${agent.name}'s work: ${task.instruction.slice(0, 50)}`);
+
+          } else if (completionReview.verdict === 'REVISION_NEEDED') {
+            const revisionMsg = `TASK REVIEW: ${completionReview.revisionNote || completionReview.reason}`;
+            addTaskNote(mission, task.id, revisionMsg, cwd);
+            emit('response', `DirectorBob → @${agent.name}: ${completionReview.revisionNote || completionReview.reason}`);
+            updateTaskStatus(mission, task.id, 'pending', cwd);
+            emit('thinking', `Task reopened for @${agent.name} — revision needed before marking complete.`);
+
+          } else {
+            updateTaskStatus(mission, task.id, 'stagnated', cwd);
+            addTaskNote(mission, task.id, `ESCALATED: ${completionReview.reason}`, cwd);
+            emit('error', `DirectorBob escalating @${agent.name}'s task — user intervention needed: ${completionReview.reason}`);
+            state.paused = true;
+          }
 
         } else if (result.needsUser) {
           updateTaskStatus(mission, task.id, 'stagnated', cwd);

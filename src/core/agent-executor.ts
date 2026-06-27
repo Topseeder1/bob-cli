@@ -88,7 +88,7 @@ interface AgentFileOutput {
 interface StructuredAgentResponse {
   thinking: string;
   files: AgentFileOutput[];
-  toolCall: ToolCall | null;
+  toolCalls: ToolCall[];
   message: string;
 }
 
@@ -105,7 +105,9 @@ RESPONSE FORMAT — you MUST respond with ONLY valid JSON matching this schema:
       "content": "<the COMPLETE file content as a string>"
     }
   ],
-  "toolCall": null | { "tool": "<toolName>", "params": { <params> } },
+  "toolCalls": [
+    { "tool": "<toolName>", "params": { <params> } }
+  ],
   "message": "<brief summary of what you did — 1-2 sentences>"
 }
 
@@ -113,25 +115,22 @@ RULES:
 - Respond with ONLY the JSON object. No markdown. No explanation before or after.
 - "files" array can contain 0 or more file entries.
 - "content" must be the COMPLETE file content — not a diff, not a snippet.
-- "toolCall" is null unless you need to invoke an action tool.
-- If a package import is missing, use toolCall with runCommand to install it first, then write the file on your next attempt.
-- If you need to readFile before making changes, set toolCall to readFile and leave files empty.
+- "toolCalls" is an array — can contain multiple tool calls executed in sequence.
+- To write files AND commit in one response: put the file in "files" and gitCommit in "toolCalls".
+- Leave "toolCalls" as empty array [] if no tools needed.
+- If a package import is missing, use runCommand in toolCalls to install it first, then write the file on your next attempt.
+- If you need to readFile before making changes, add readFile to toolCalls and leave files empty.
 - "thinking" is for your reasoning — it will NOT be written to any file.
 - "message" is shown to the user — keep it concise.
 `;
 
 // ─── PUBSPEC READER ───────────────────────────────────────────────
 
-/**
- * Reads pubspec.yaml if present and extracts package name + dependencies.
- * Gives agents awareness of what packages are actually available.
- */
 function readPubspec(cwd: string): string {
   const pubspecPath = path.join(cwd, 'pubspec.yaml');
   if (!fs.existsSync(pubspecPath)) return '';
   try {
     const content = fs.readFileSync(pubspecPath, 'utf-8');
-    // Extract just the relevant parts — name + dependencies sections
     const lines = content.split('\n');
     const relevant: string[] = [];
     let inDeps = false;
@@ -160,10 +159,6 @@ function readPubspec(cwd: string): string {
 
 // ─── PACKAGE.JSON READER ──────────────────────────────────────────
 
-/**
- * Reads package.json if present and extracts name + dependencies.
- * Gives agents awareness of installed npm packages.
- */
 function readPackageJson(cwd: string): string {
   const pkgPath = path.join(cwd, 'package.json');
   if (!fs.existsSync(pkgPath)) return '';
@@ -189,11 +184,6 @@ function readPackageJson(cwd: string): string {
   }
 }
 
-/**
- * Reads the project's dependency manifest — pubspec.yaml, package.json,
- * requirements.txt, etc. Returns a formatted string for injection into
- * agent context so agents know what packages are actually available.
- */
 function readProjectDependencies(cwd: string): string {
   const pubspec = readPubspec(cwd);
   if (pubspec) return `PUBSPEC.YAML:\n${pubspec}`;
@@ -249,10 +239,11 @@ function parseStructuredResponse(rawResponse: string): StructuredAgentResponse |
     const response: StructuredAgentResponse = {
       thinking: typeof parsed.thinking === 'string' ? parsed.thinking : '',
       files: [],
-      toolCall: null,
+      toolCalls: [],
       message: typeof parsed.message === 'string' ? parsed.message : '',
     };
 
+    // ─── Parse files array ──────────────────────────────────────
     if (Array.isArray(parsed.files)) {
       for (const file of parsed.files) {
         if (
@@ -274,15 +265,26 @@ function parseStructuredResponse(rawResponse: string): StructuredAgentResponse |
       }
     }
 
+    // ─── Parse toolCalls array ──────────────────────────────────
+    if (Array.isArray(parsed.toolCalls)) {
+      for (const tc of parsed.toolCalls) {
+        if (typeof tc === 'object' && tc !== null && typeof tc.tool === 'string') {
+          response.toolCalls.push({ tool: tc.tool, params: tc.params || {} });
+        }
+      }
+    }
+
+    // ─── Backward compat: single toolCall → toolCalls array ────
     if (
+      response.toolCalls.length === 0 &&
       parsed.toolCall &&
       typeof parsed.toolCall === 'object' &&
       typeof parsed.toolCall.tool === 'string'
     ) {
-      response.toolCall = {
+      response.toolCalls.push({
         tool: parsed.toolCall.tool,
         params: parsed.toolCall.params || {},
-      };
+      });
     }
 
     return response;
@@ -375,13 +377,18 @@ CURRENT FILE: ${mentionedFile} (${lineCount} lines)
 ${currentContent}
 \`\`\`
 
+YOUR JOB: Read the file above carefully. Identify exactly where the task requires a change. Apply ONLY that change. Output the COMPLETE file with your change applied.
+
 PATCH RULES (MANDATORY):
-1. In your "files" array, output the COMPLETE file with ONLY your targeted change applied.
-2. PRESERVE every import — do not add, remove, or reorder imports unless the task explicitly requires it.
-3. PRESERVE every export — every function/class that is currently exported must remain exported.
-4. PRESERVE all existing logic — only touch the specific section the task describes.
-5. If you are unsure where to make the change, set toolCall to readFile and leave files empty.
-6. The output file must be at least ${Math.floor(lineCount * 0.85)} lines (85% of original ${lineCount} lines).`;
+1. In your "files" array, output the COMPLETE file with ONLY your targeted change applied — every single line, not just the changed section.
+2. The file you output MUST be different from the current file above — if it is identical, you have failed the task.
+3. PRESERVE every import — do not add, remove, or reorder imports unless the task explicitly requires it.
+4. PRESERVE every export — every function/class that is currently exported must remain exported.
+5. PRESERVE all existing logic — only touch the specific section the task describes.
+6. DO NOT output a summary or description — output the actual modified file content in the "files" array.
+7. The output file must be at least ${Math.floor(lineCount * 0.85)} lines (85% of original ${lineCount} lines).
+
+EXAMPLE: If the task says "add a _foo() method", find the class body in the file above, add _foo() inside it, and output the COMPLETE file with that addition. Every other line stays exactly the same.`;
   }
 
   if (op === 'REFACTOR') {
@@ -417,35 +424,46 @@ Write the complete replacement file in your "files" array. Preserve the same exp
 // ─── FILE EXISTENCE VALIDATOR ─────────────────────────────────────
 
 /**
- * After a CREATE task completes with high satisfaction,
- * verify the file actually exists on disk.
+ * After a CREATE task completes, verify expected files actually exist on disk.
  *
- * Ghost completions happen when the agent reports success in its
- * "message" field but the "files" array was empty or had wrong paths.
- * This catches that and forces a retry by returning score 0.
+ * FIXED: Checks both filesCreated AND filesModified arrays.
+ * On retry attempts the file already exists so writeFileToDisk sets isNew=false
+ * meaning it lands in filesModified not filesCreated. Either array counts as written.
+ * File is only flagged missing if it's absent from BOTH arrays AND not on disk.
  */
 function validateCreateTaskFiles(
   task: AgentTask,
   filesCreated: string[],
+  filesModified: string[],
   cwd: string
 ): { valid: boolean; missingFiles: string[] } {
   if (task.operationType !== 'CREATE') return { valid: true, missingFiles: [] };
 
-  // Extract expected file paths from the task instruction
   const filePathMatches = task.instruction.match(
     /(?:lib|src|test)\/[\w\-\.\/\\]+\.\w+/g
   ) || [];
 
+  if (filePathMatches.length === 0) return { valid: true, missingFiles: [] };
+
   const missingFiles: string[] = [];
+  const allFilesWritten = [...filesCreated, ...filesModified];
 
   for (const expectedPath of filePathMatches) {
     const absolutePath = path.join(cwd, expectedPath);
-    const wasCreated = filesCreated.some(f =>
-      f.toLowerCase() === expectedPath.toLowerCase() ||
-      path.join(cwd, f).toLowerCase() === absolutePath.toLowerCase()
-    );
 
-    if (!wasCreated || !fs.existsSync(absolutePath)) {
+    // Normalize to forward slashes for cross-platform comparison
+    const normalizedExpected = expectedPath.replace(/\\/g, '/');
+    const wasWritten = allFilesWritten.some(f => {
+      const normalizedF = f.replace(/\\/g, '/');
+      return (
+        normalizedF.toLowerCase() === normalizedExpected.toLowerCase() ||
+        path.join(cwd, f).replace(/\\/g, '/').toLowerCase() ===
+          absolutePath.replace(/\\/g, '/').toLowerCase()
+      );
+    });
+
+    // File is only missing if NOT in either array AND NOT physically on disk
+    if (!wasWritten && !fs.existsSync(absolutePath)) {
       missingFiles.push(expectedPath);
     }
   }
@@ -563,11 +581,11 @@ YOUR SPECIALTY: ${agent.task}
 YOUR TEAM:
 ${otherAgents || 'No other agents currently active.'}
 
-${projectDependencies ? `--- PROJECT DEPENDENCIES ---\n${projectDependencies}\nIMPORTANT: Only import packages that are listed above. If you need a package that is NOT listed, use runCommand to install it first.\n--- END DEPENDENCIES ---\n` : ''}
+${projectDependencies ? `--- PROJECT DEPENDENCIES ---\n${projectDependencies}\nIMPORTANT: Only import packages that are listed above. If you need a package that is NOT listed, use runCommand in toolCalls to install it first.\n--- END DEPENDENCIES ---\n` : ''}
 
 ${fullContext ? `--- PROJECT CONTEXT ---\n${fullContext}\n--- END CONTEXT ---\n` : ''}
 
-AVAILABLE TOOLS:
+AVAILABLE TOOLS (add to toolCalls array):
 - readFile: { "path": "relative/path" } — read a file before modifying it
 - writeOutput: { "content": "findings" } — save audit/review findings
 - readAgentOutput: { "agentName": "name", "taskId": "id" } — read another agent's output
@@ -612,7 +630,7 @@ Execute this task now. Respond with ONLY the JSON object.`;
       backupPath: string | null;
       isNew: boolean;
     }> = [];
-    let toolResult: ToolResult | null = null;
+    let lastToolResult: ToolResult | null = null;
     let cleanResponse = '';
 
     if (structured) {
@@ -620,7 +638,7 @@ Execute this task now. Respond with ONLY the JSON object.`;
       cleanResponse = structured.message || structured.thinking || '';
       emit('response', cleanResponse);
 
-      // ─── Write files ──────────────────────────────────────
+      // ─── Write files first ────────────────────────────────
       for (const file of structured.files) {
         const writeResult = writeFileToDisk(file.path, file.content, cwd);
 
@@ -655,25 +673,24 @@ Execute this task now. Respond with ONLY the JSON object.`;
         );
       }
 
-      // ─── Execute tool call ────────────────────────────────
-      if (structured.toolCall) {
-        emit('tool_call', `@${agent.name} using tool: ${structured.toolCall.tool}`, structured.toolCall);
+      // ─── Execute toolCalls in sequence ────────────────────
+      const executor = new AgentToolExecutor(
+        cwd,
+        agent.name,
+        task.id,
+        mission.id,
+        allFilesWithBackups
+      );
 
-        const executor = new AgentToolExecutor(
-          cwd,
-          agent.name,
-          task.id,
-          mission.id,
-          allFilesWithBackups
-        );
-
-        toolResult = await executor.execute(structured.toolCall);
+      for (const toolCall of structured.toolCalls) {
+        emit('tool_call', `@${agent.name} using tool: ${toolCall.tool}`, toolCall);
+        lastToolResult = await executor.execute(toolCall);
         emit(
           'tool_result',
-          toolResult.success
-            ? `✅ ${structured.toolCall.tool}: ${toolResult.output.slice(0, 80)}`
-            : `❌ ${structured.toolCall.tool} failed: ${toolResult.error}`,
-          toolResult
+          lastToolResult.success
+            ? `✅ ${toolCall.tool}: ${lastToolResult.output.slice(0, 80)}`
+            : `❌ ${toolCall.tool} failed: ${lastToolResult.error}`,
+          lastToolResult
         );
       }
 
@@ -734,13 +751,13 @@ Execute this task now. Respond with ONLY the JSON object.`;
           allFilesWithBackups
         );
 
-        toolResult = await executor.execute(toolCall);
+        lastToolResult = await executor.execute(toolCall);
         emit(
           'tool_result',
-          toolResult.success
-            ? `✅ ${toolCall.tool}: ${toolResult.output.slice(0, 80)}`
-            : `❌ ${toolCall.tool} failed: ${toolResult.error}`,
-          toolResult
+          lastToolResult.success
+            ? `✅ ${toolCall.tool}: ${lastToolResult.output.slice(0, 80)}`
+            : `❌ ${toolCall.tool} failed: ${lastToolResult.error}`,
+          lastToolResult
         );
       }
 
@@ -767,20 +784,26 @@ Execute this task now. Respond with ONLY the JSON object.`;
       }
     }
 
-    // ─── 16. File existence validation for CREATE tasks ────────
-    // Catches ghost completions — agent claims success but file
-    // was never actually written to disk.
-    const existenceCheck = validateCreateTaskFiles(task, allFilesCreated, cwd);
+    // ─── 16. Ghost completion check ───────────────────────────
+    // FIXED: passes both filesCreated AND filesModified.
+    // File is only flagged missing if absent from both arrays
+    // AND not physically on disk.
+    const existenceCheck = validateCreateTaskFiles(
+      task,
+      allFilesCreated,
+      allFilesModified,
+      cwd
+    );
+
     if (!existenceCheck.valid) {
       emit(
         'error',
         `@${agent.name} ghost completion detected — expected files not found on disk: ${existenceCheck.missingFiles.join(', ')}. Forcing retry.`
       );
 
-      // Force satisfaction score to 0 — task must retry
       const ghostSatisfaction: SatisfactionResult = {
         score: 0,
-        reasoning: `Ghost completion — the following files were expected but not written to disk: ${existenceCheck.missingFiles.join(', ')}. Agent must write the actual files.`,
+        reasoning: `Ghost completion — files expected but not written: ${existenceCheck.missingFiles.join(', ')}. Agent must write the actual files.`,
         isDone: false,
         isStagnating: false,
         needsDirector: false,
@@ -793,7 +816,7 @@ Execute this task now. Respond with ONLY the JSON object.`;
         taskId: task.id,
         agentName: agent.name,
         response: cleanResponse,
-        toolResult,
+        toolResult: lastToolResult,
         satisfaction: ghostSatisfaction,
         isDone: false,
         isStagnating: false,
@@ -805,14 +828,36 @@ Execute this task now. Respond with ONLY the JSON object.`;
     }
 
     // ─── 17. Evaluate satisfaction ─────────────────────────────
+    // FIXED: For CREATE operations, include actual written file
+    // content in satisfactionInput so the evaluator scores against
+    // real evidence — not just the agent's claim.
     const filesWritten = allFilesCreated.length + allFilesModified.length;
+    const gitCommitCall = structured?.toolCalls.find(tc => tc.tool === 'gitCommit');
+
+    let writtenFilesContent = '';
+    if (task.operationType === 'CREATE' && filesWritten > 0) {
+      const allWritten = [...allFilesCreated, ...allFilesModified];
+      for (const filePath of allWritten) {
+        const absolutePath = path.join(cwd, filePath);
+        if (fs.existsSync(absolutePath)) {
+          try {
+            const content = fs.readFileSync(absolutePath, 'utf-8');
+            writtenFilesContent += `\nFile: ${filePath}\n\`\`\`\n${content.slice(0, 1000)}\n\`\`\`\n`;
+          } catch { }
+        }
+      }
+    }
+
     const satisfactionInput = [
       cleanResponse,
       filesWritten > 0
         ? `Files written: ${[...allFilesCreated, ...allFilesModified].join(', ')}`
         : '',
-      toolResult?.success
-        ? `Tool: ${structured?.toolCall?.tool || 'unknown'} — ${toolResult.output.slice(0, 200)}`
+      writtenFilesContent,
+      lastToolResult?.success && gitCommitCall
+        ? `Commit queued: ${lastToolResult.output.slice(0, 200)}`
+        : lastToolResult?.success
+        ? `Tool executed: ${lastToolResult.output.slice(0, 200)}`
         : '',
     ].filter(Boolean).join('\n\n');
 
@@ -841,7 +886,7 @@ Execute this task now. Respond with ONLY the JSON object.`;
       taskId: task.id,
       agentName: agent.name,
       response: cleanResponse,
-      toolResult,
+      toolResult: lastToolResult,
       satisfaction,
       isDone: satisfaction.isDone,
       isStagnating: satisfaction.isStagnating,

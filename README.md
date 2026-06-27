@@ -1,3 +1,4 @@
+// File: README.md
 <div align="center">
 
 # ◉ Bob's CLI
@@ -12,14 +13,13 @@
 
 ![Bob's CLI](https://raw.githubusercontent.com/Topseeder1/bob-cli/master/assets/BobWelcome.gif)
 
-[Installation](#installation) · [Quick Start](#quick-start) · [Features](#features) · [VaultBob](#vaultbob--your-codes-permanent-memory) · [UserBob](#userbob--your-digital-twin) · [Command Center](#autonomous-command-center) · [Docs](https://seedling-io.gitbook.io/bob-cli/)
+[Installation](#installation) · [Quick Start](#quick-start) · [Features](#features) · [The Crew](#the-crew--your-autonomous-engineering-department) · [VaultBob](#vaultbob--your-codes-permanent-memory) · [UserBob](#userbob--your-digital-twin) · [Command Center](#autonomous-command-center) · [Docs](https://seedling-io.gitbook.io/bob-cli/)
 
 ---
 
 *Built by [Bob's Workshop](https://bobs-workshop.web.app) — A Seedling Company*
 
 </div>
-
 
 ---
 
@@ -37,6 +37,8 @@ Every other AI coding assistant lives in a browser, disconnected from your actua
 | Personalization Mode | ✅ | ❌ | ❌ | ❌ |
 | Digital twin simulation | ✅ | ❌ | ❌ | ❌ |
 | Autonomous task dispatch | ✅ | ❌ | ❌ | ❌ |
+| Multi-agent orchestration | ✅ | ❌ | ❌ | ❌ |
+| Supervised commit review | ✅ | ❌ | ❌ | ❌ |
 | Conversation persistence | ✅ | ✅ | ❌ | Partial |
 | Deep Dives & Forks | ✅ | ❌ | ❌ | ❌ |
 | Remote execution (SovereignLink) | ✅ | Partial | ❌ | ❌ |
@@ -116,6 +118,7 @@ When you first install Bob's CLI, you're greeted with a branded welcome screen:
 | **Analyse** | Full QA code review with auto-fix |
 | **Autonomy** | Autonomous repair across entire codebase |
 | **Profile** | Behavioral DNA profiling + dashboard |
+| **The Crew** | Multi-agent orchestration — spawn a team, set a mission, ship code |
 | **VaultBob** | Encrypted backup, versioning & restore — your code's permanent memory |
 | **UserBob** | AI digital twin simulation — your autonomous proxy |
 | **Command Center** | Inspect, approve, and manage autonomous task dispatch |
@@ -138,6 +141,111 @@ bob analyse              # Run full code review
 bob analyse --results    # View dashboard
 bob analyse --auto       # Auto-fix with safety constraints
 ```
+
+---
+
+## The Crew — Your Autonomous Engineering Department
+
+**v1.0.0 introduces The Crew** — a fully local autonomous multi-agent orchestration system that runs entirely on your hardware. Spawn specialized agents, set a mission, and let DirectorBob coordinate the team. The Crew plans, implements, reviews, and commits real code changes to your project — with you in control the entire time.
+
+```bash
+bob agent-run "Add authentication to the app"
+```
+
+DirectorBob reads your actual codebase, decomposes the mission into specific tasks, and dispatches agents to execute in parallel or sequence based on dependencies. Every file an agent writes is reviewed by DirectorBob before the task is marked complete. Every commit is reviewed before it touches git. Every file is backed up before it is modified.
+
+```
+  ╔══════════════════════════════════════════════════════════╗
+  ║  🎬 DirectorBob  — Autonomous Mission Control
+  ╠══════════════════════════════════════════════════════════╣
+  ║  Add authentication to the app
+  ║  Mission: m_1782095907390  │  Tasks: 3  │  Team: 2 agents
+  ║
+  ║    @builderBob      @architectBob
+  ╠══════════════════════════════════════════════════════════╣
+  ║  📋 Task Map  — 3 tasks
+  ║  ⏸    @architectBob    CREATE lib/auth/auth_service.dart
+  ║  ⏸    @builderBob      PATCH lib/main.dart: ADD auth init  ← 1 dep
+  ║  ⏸    @builderBob      PATCH lib/screens/login.dart        ← 1 dep
+  ╚══════════════════════════════════════════════════════════╝
+
+  [9:14:02 AM] 🎬 DirectorBob: Dispatching @architectBob → [CREATE]
+  [9:14:02 AM] 🎬 DirectorBob: Dispatching @builderBob → [PATCH]
+
+    @architectBob  Created lib/auth/auth_service.dart (42 lines)
+    ✅ DirectorBob approved @architectBob's work
+    ✅ DirectorBob approved ✅ committed: 91a039d
+
+    @builderBob  Patched lib/main.dart — auth init added
+    ✅ DirectorBob approved @builderBob's work
+```
+
+### How The Crew Works
+
+**DirectorBob** is your Head of Engineering. Before dispatching a single task he reads your project's file tree, assesses what exists and what doesn't, and generates a dependency-aware task map. He decides who does what, in what order, and in what way — CREATE for new files, PATCH for surgical edits, REFACTOR for structural changes, REPLACE for placeholder files.
+
+**Agents** execute their assigned tasks using the same file-writing pipeline that powers `bob chat` — proven, approval-gated, and backed up on every write. They self-evaluate their own work with a satisfaction score. If the score isn't high enough, they retry. If they stagnate, DirectorBob intervenes with specific feedback. If they still can't resolve it, the mission pauses and asks you.
+
+**Every file write is reviewed by DirectorBob** before the task is marked complete. He reads the original file, the new file, the project context, and the task instruction. If an agent patched 5 lines when the task required 300, or gutted a working file instead of extending it — denied, restored from backup, retried with feedback.
+
+**Every commit is reviewed before it touches git.** When an agent calls `gitCommit`, DirectorBob performs a full code review against the task instruction. APPROVE and the commit executes. DENY and the original is restored, a revision note is injected, and the agent retries. Three denials and the mission pauses for you.
+
+### Spawn Your Team
+
+```bash
+bob agent spawn builder "Implement features and write code"
+bob agent spawn architect "Design approach and review structure"
+bob agent list                    # See your active team
+bob agent status                  # Detailed status with session info
+bob agent hub                     # Interactive command center
+```
+
+### Run a Mission
+
+```bash
+bob agent-run "your mission"                    # Launch with active team
+bob agent-run --dry-run "your mission"          # Preview task map only
+bob agent-run --resume                          # Resume a paused mission
+bob agent-run --no-commit                       # Skip post-mission commit prompt
+```
+
+### Live Commands During Execution
+
+```
+/pause                  — pause after active tasks complete
+/resume                 — resume from pause
+/status                 — full task map with current state
+/skip <taskId>          — skip a stuck task
+/inject "note"          — send a director note mid-mission
+/set-target <agent> <n> — adjust satisfaction target
+/abort                  — stop everything immediately
+```
+
+### Personas
+
+Agents can be given specialized personas that shape how they think and communicate:
+
+```bash
+bob agent spawn architect "Design the system" --persona local:architectBob
+bob agent spawn security "Audit the codebase" --persona local:securityBob
+bob agent personas                              # List all available personas
+```
+
+| Persona | Specialty |
+|---------|----------|
+| `local:architectBob` | Contract-first, systems design |
+| `local:builderBob` | Ships fast, pragmatic execution |
+| `local:qaEngineerBob` | Testing, edge cases, reliability |
+| `local:securityBob` | Threat modeling, zero trust |
+| `local:frontendBob` | UI/UX, accessibility, components |
+| `local:backendBob` | APIs, reliability, idempotency |
+| `local:devopsBob` | CI/CD, infrastructure, pipelines |
+
+### What Makes The Crew Different
+
+Every other agent system executes and hopes for the best. The Crew has DirectorBob — a supervisor who reviews every file change before it's accepted, every commit before it's recorded, and every stuck task before it spirals. Your codebase is protected at every step. Your backups are automatic. Your control is never surrendered.
+
+Runs entirely on your local model. Zero cloud required. Zero cost.
 
 ---
 
@@ -340,6 +448,20 @@ VaultBob — Backup & Restore
   bob backup list                    # View revision history
   bob backup restore                 # Interactive restore
 
+The Crew — Multi-Agent Orchestration
+  bob agent spawn <name> "<task>"    # Spawn a named agent
+  bob agent spawn <name> --persona   # Spawn with a persona
+  bob agent list                     # List all agents
+  bob agent status                   # Detailed agent status
+  bob agent hub                      # Interactive command center
+  bob agent chat <name>              # Chat with a specific agent
+  bob agent personas                 # List available personas
+  bob agent stop <name>              # Stop an agent
+  bob agent reset <name>             # Reset an agent
+  bob agent-run "mission"            # Launch autonomous mission
+  bob agent-run --dry-run "mission"  # Preview task map
+  bob agent-run --resume             # Resume paused mission
+
 Digital Twin
   bob userbob "mission"              # Launch digital twin simulation
   bob command-center                 # Autonomous task board
@@ -390,13 +512,24 @@ Tier 1 — Local (Free)              Tier 3 — Platform (Subscription)
 ▸ Files on your machine             ▸ Conversations sync to web
 ▸ Local profiling                   ▸ Cloud profiling + Frank Engine
 ▸ Local UserBob simulation          ▸ UserBob + autonomous dispatch
-▸ VaultBob backup & restore         ▸ Deep dives, forks, remote exec
-▸ Zero cost                         ▸ VaultBob + team license mgmt
+▸ The Crew (local agents)           ▸ Deep dives, forks, remote exec
+▸ VaultBob backup & restore         ▸ VaultBob + team license mgmt
+▸ Zero cost                         ▸ Scales to enterprise
 ```
 
 Same commands. Scale without changing tools.
 
 ---
+
+## What's New in v1.0.0
+
+- **The Crew™** — A fully local autonomous multi-agent orchestration system. Spawn specialized agents, set a mission, and let DirectorBob coordinate the team. Dependency-aware parallel execution, operation type classification (CREATE / PATCH / REFACTOR / REPLACE), satisfaction scoring, stagnation escalation, and automatic backup on every file write.
+- **DirectorBob** — Head of Engineering for every mission. Reads your codebase, generates a task map, reviews every file change before marking a task complete, and reviews every commit before it touches git. DENY triggers automatic restore from backup and revision feedback.
+- **Agent personas** — Seven built-in specialist personas including architectBob, builderBob, qaEngineerBob, securityBob, frontendBob, backendBob, and devopsBob. Each shapes how the agent thinks, communicates, and approaches problems.
+- **`bob agent-run`** — One command to launch a supervised autonomous mission against your real codebase.
+- **`bob agent-run --dry-run`** — Preview DirectorBob's full task map before executing.
+- **Post-mission commit prompt** — Condensed diff preview and one-click commit after every mission.
+- **`bob agent hub`** — Interactive command center for your full agent team.
 
 ## What's New in v0.7.0
 
@@ -439,10 +572,11 @@ The cloud is optional. The power is not.
 
 **The AI coding tool that learns how you think.**
 **The only backup system that protects your engineering brain.**
+**The only terminal with an engineering department built in.**
 
 **Sovereign. Free. Yours.**
 
-Bob's CLI · VaultBob™ · SovereignLink™ · Bob's Workshop · Seedling
+Bob's CLI · The Crew™ · VaultBob™ · SovereignLink™ · Bob's Workshop · Seedling
 
 *Written by Bob.*
 

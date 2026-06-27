@@ -1,3 +1,5 @@
+// File: src/core/agent-tools.ts
+
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -32,8 +34,6 @@ export interface ToolResult {
 }
 
 // ─── SAFE COMMAND WHITELIST ───────────────────────────────────────
-// Only these command prefixes are permitted.
-// Protects users from agents running destructive commands.
 
 const SAFE_COMMAND_PREFIXES: string[] = [
   'flutter pub add',
@@ -87,10 +87,11 @@ function getPendingCommitsDir(cwd: string): string {
   return path.join(BOB_DIR, 'projects', projectName, 'agents', 'pending-commits');
 }
 
+// ─── FIXED: use commit.id as filename for exact-match clearing ───
 export function savePendingCommit(commit: PendingCommit, cwd: string): void {
   const dir = getPendingCommitsDir(cwd);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const filename = `${commit.timestamp.replace(/[:.]/g, '-')}_${commit.taskId}.json`;
+  const filename = `${commit.id}.json`;
   fs.writeFileSync(path.join(dir, filename), JSON.stringify(commit, null, 2));
 }
 
@@ -114,13 +115,31 @@ export function loadPendingCommits(cwd: string): PendingCommit[] {
   }
 }
 
+// ─── FIXED: exact match by commit id ─────────────────────────────
 export function clearPendingCommit(commitId: string, cwd: string): void {
   const dir = getPendingCommitsDir(cwd);
   if (!fs.existsSync(dir)) return;
   try {
-    const files = fs.readdirSync(dir).filter(f => f.includes(commitId));
-    for (const file of files) {
-      fs.unlinkSync(path.join(dir, file));
+    const filePath = path.join(dir, `${commitId}.json`);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch { }
+}
+
+// ─── NEW: clears ALL pending commits for a specific task ─────────
+export function clearPendingCommitsForTask(taskId: string, cwd: string): void {
+  const dir = getPendingCommitsDir(cwd);
+  if (!fs.existsSync(dir)) return;
+  try {
+    const commits = loadPendingCommits(cwd);
+    for (const commit of commits) {
+      if (commit.taskId === taskId) {
+        const filePath = path.join(dir, `${commit.id}.json`);
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      }
     }
   } catch { }
 }
@@ -147,7 +166,7 @@ const ALL_TOOL_NAMES: ToolName[] = [
 
 export const AGENT_TOOLS_PROMPT = `
 ACTION TOOLS (for non-file operations):
-Use the "toolCall" field in your JSON response when you need an action.
+Use the "toolCalls" array in your JSON response when you need an action.
 
 readFile
   params: { "path": "src/core/config-store.ts" }
@@ -181,7 +200,8 @@ deleteFile
   Use when: Removing a file that is no longer needed.
 
 RULES:
-- Only ONE toolCall per JSON response.
+- Add tools to the "toolCalls" array in your JSON response.
+- You can include multiple tools — they execute in sequence after files are written.
 - For file creation/modification use the "files" array in your JSON response.
 - Always readFile before modifying an existing file.
 - If a package import fails, use runCommand to install it first.
@@ -357,15 +377,11 @@ export class AgentToolExecutor {
   }
 
   // ─── RUN COMMAND ──────────────────────────────────────────────
-  // Executes a whitelisted shell command in the project directory.
-  // Only package installation commands are permitted.
-  // Protects users from agents running destructive operations.
 
   private runCommand(params: Record<string, any>): ToolResult {
     const command = params.command;
     if (!command) return this.error('runCommand requires command.');
 
-    // ─── Safety check — whitelist only ────────────────────────
     if (!isCommandSafe(command)) {
       return this.error(
         `Command not permitted: "${command}". ` +
@@ -377,7 +393,7 @@ export class AgentToolExecutor {
     try {
       const output = execSync(command, {
         cwd: this.cwd,
-        timeout: 60000, // 60 second timeout
+        timeout: 60000,
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -390,17 +406,29 @@ export class AgentToolExecutor {
       };
     } catch (e: any) {
       const stderr = e.stderr ? e.stderr.toString().slice(0, 300) : '';
-      return this.error(
-        `Command failed: "${command}"\n${e.message}\n${stderr}`
-      );
+      return this.error(`Command failed: "${command}"\n${e.message}\n${stderr}`);
     }
   }
 
   // ─── GIT COMMIT → MULTI-QUEUE ─────────────────────────────────
+  // FIXED: checks for existing pending commit for this task before
+  // queuing a new one — prevents duplicate commits from retry loops.
 
   private gitCommitQueue(params: Record<string, any>): ToolResult {
     const message = params.message;
     if (!message) return this.error('gitCommit requires message.');
+
+    // ─── One commit per task at a time ────────────────────────
+    const existing = loadPendingCommits(this.cwd);
+    const alreadyQueued = existing.some(c => c.taskId === this.taskId);
+    if (alreadyQueued) {
+      return {
+        success: true,
+        output: `Commit already queued for this task — DirectorBob will review it shortly.`,
+        filesCreated: [],
+        filesModified: [],
+      };
+    }
 
     const commitId = `${this.taskId}_${Date.now()}`;
 
