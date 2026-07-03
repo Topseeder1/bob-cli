@@ -1,4 +1,4 @@
-// File: README.md
+
 <div align="center">
 
 # ◉ Bob's CLI
@@ -13,7 +13,7 @@
 
 ![Bob's CLI](https://raw.githubusercontent.com/Topseeder1/bob-cli/master/assets/BobWelcome.gif)
 
-[Installation](#installation) · [Quick Start](#quick-start) · [Features](#features) · [The Crew](#the-crew--your-autonomous-engineering-department) · [VaultBob](#vaultbob--your-codes-permanent-memory) · [UserBob](#userbob--your-digital-twin) · [Command Center](#autonomous-command-center) · [Docs](https://seedling-io.gitbook.io/bob-cli/)
+[Installation](#installation) · [Quick Start](#quick-start) · [Features](#features) · [The Crew](#the-crew--your-autonomous-engineering-department) · [VaultBob](#vaultbob--your-codes-permanent-memory) · [UserBob](#userbob--your-digital-twin) · [Command Center](#autonomous-command-center) · [Cross-Project References](#cross-project-references) · [Docs](https://seedling-io.gitbook.io/bob-cli/)
 
 ---
 
@@ -48,6 +48,7 @@ Every other AI coding assistant lives in a browser, disconnected from your actua
 | Encrypted cloud backup (VaultBob) | ✅ | ❌ | ❌ | ❌ |
 | Per-file surgical restore | ✅ | ❌ | ❌ | ❌ |
 | Full machine migration | ✅ | ❌ | ❌ | ❌ |
+| Cross-project references | ✅ | ❌ | ❌ | ❌ |
 
 ---
 
@@ -127,6 +128,7 @@ When you first install Bob's CLI, you're greeted with a branded welcome screen:
 | **SovereignLink** | Remote execution from any device |
 | **BYOK** | Bring your own API keys |
 | **Push** | Git stage + commit + push in one command |
+| **Cross-Project References** | Pull in context from other org projects mid-conversation |
 
 ---
 
@@ -420,6 +422,104 @@ bob command-center --settings
 
 ---
 
+## Cross-Project References
+
+**v1.1.0 introduces Cross-Project References** — pull in context from any shared project in your organization directly inside a conversation or deep dive session. No more copy-pasting files. No more context switching. Bob sees the actual code from another project and uses it to inform his responses in real time.
+
+Built for the moment when you're debugging a problem in one project and you know you solved something similar somewhere else — or when you want Bob to match a pattern, style, or architecture from a reference codebase.
+
+```
+  📎 Referencing /payments-api...
+```
+
+### How It Works
+
+Your organization's admin shares projects as named references in Bob's Workshop. Each shared project gets a custom alias and per-user access permissions. Once a project is shared, any permitted user can invoke it from the terminal by typing the alias as a slash command.
+
+Bob receives the most semantically relevant files from the referenced project — summaries and full code content — and uses them to answer your question. He acknowledges the reference transparently so you always know where the context came from.
+
+### Inline Reference
+
+Type the alias directly in your message:
+
+```bash
+/payments-api How does the webhook retry logic work here?
+```
+
+Bob performs a vector search against the referenced project, retrieves the most relevant files, and responds with full cross-project awareness.
+
+### Browse Available References
+
+Type `/ref` inside any chat or deep dive session to see a numbered list of projects you have access to:
+
+```
+  ╔══════════════════════════════════════════════════════════╗
+  ║  📎 AVAILABLE REFERENCES                                 ║
+  ╠══════════════════════════════════════════════════════════╣
+  ║   1. /payments-api       seedling/payments-service       ║
+  ║   2. /mobile-app         seedling/mobile                 ║
+  ║   3. /bob-workshop       seedling/bobs-workshop          ║
+  ╠══════════════════════════════════════════════════════════╣
+  ║  Enter number to select, 0 to cancel                     ║
+  ╚══════════════════════════════════════════════════════════╝
+```
+
+Select a project by number. Choose whole project (broad vector search) or drill into a specific file.
+
+### File-Level Reference
+
+When you need a specific file rather than a semantic search:
+
+```
+  /payments-api — whole project (p) or specific file (f)? f
+  Filter files (or Enter for all): webhook
+   1. src/handlers/webhook_handler.ts
+   2. src/services/webhook_retry_service.ts
+  Select file: 1
+```
+
+Bob reads that exact file and responds with precise, file-specific knowledge.
+
+### Sticky Reference — Lock a Project for the Session
+
+Pin a reference so it applies to every message automatically — no need to type the alias each time:
+
+```bash
+/pin
+```
+
+The prompt updates to show the active sticky:
+
+```
+  📌 /payments-api ›
+```
+
+Every message you send automatically includes context from the pinned project. Toggle it off at any time:
+
+```bash
+/pin    # toggles off if already active
+```
+
+**Deep dives have their own independent sticky reference.** Each sandbox session can reference a completely different project — two deep dives in the same conversation can point to two different codebases simultaneously.
+
+### Reference Commands
+
+```
+/ref           Browse available reference projects
+/pin           Toggle sticky reference on or off
+```
+
+### Use Cases
+
+- **Bug cross-reference** — Solved a similar issue in another project? Reference it and Bob maps the solution to your current codebase.
+- **Style consistency** — Want Bob to match the architecture or naming conventions from a reference project? Pin it and every response aligns.
+- **Feature parity** — Building a feature that already exists elsewhere in your org? Reference it and Bob uses the real implementation as the baseline.
+- **Deep dive research** — Inside a sandbox session, pin a reference project and every hypothesis Bob explores is grounded in real cross-project knowledge.
+
+> **Cross-Project References require a Bob's Workshop organization account with shared projects configured by your admin. Platform tier required.**
+
+---
+
 ## Commands
 
 ![Help Output](https://raw.githubusercontent.com/Topseeder1/bob-cli/master/assets/BobCliHelpOutput.gif)
@@ -514,12 +614,20 @@ Tier 1 — Local (Free)              Tier 3 — Platform (Subscription)
 ▸ Local UserBob simulation          ▸ UserBob + autonomous dispatch
 ▸ The Crew (local agents)           ▸ Deep dives, forks, remote exec
 ▸ VaultBob backup & restore         ▸ VaultBob + team license mgmt
-▸ Zero cost                         ▸ Scales to enterprise
+▸ Zero cost                         ▸ Cross-project references
+                                    ▸ Scales to enterprise
 ```
 
 Same commands. Scale without changing tools.
 
 ---
+
+## What's New in v1.1.0
+
+- **Cross-Project References** — Pull in context from any shared project in your organization directly inside chat or deep dive sessions. Invoke with `/alias`, browse with `/ref`, or lock a project for the entire session with `/pin`. Each deep dive maintains its own independent sticky reference. Bob receives full file content — summaries and source code — and responds with real cross-project awareness. Organization account required.
+- **`/ref`** — Interactive reference browser. Browse all projects your org admin has shared with you, pick by number, choose whole-project vector search or drill into a specific file.
+- **`/pin`** — Sticky reference toggle. Lock a project for the session so every message automatically carries cross-project context without repeating the alias.
+- **Independent deep dive references** — Each sandbox session can pin a completely different project. Two deep dives in the same conversation can reference two different codebases simultaneously.
 
 ## What's New in v1.0.0
 
