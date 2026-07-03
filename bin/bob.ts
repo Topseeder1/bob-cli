@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+// File: bin/bob.ts
 
 import { Command } from 'commander';
 import chalk from 'chalk';
@@ -23,6 +23,7 @@ import { registerProfileCommand } from '../src/commands/profile.js';
 import { registerBackupCommand } from '../src/commands/backup.js';
 import { registerAgentCommand } from '../src/commands/agent.js';
 import { registerAgentRunCommand } from '../src/commands/agent-run.js';
+import { registerUserBobCommand } from '../src/commands/userbob.js';
 
 const program = new Command();
 
@@ -80,5 +81,6 @@ registerProfileCommand(program);
 registerBackupCommand(program);
 registerAgentCommand(program);
 registerAgentRunCommand(program);
+registerUserBobCommand(program);
 
 program.parse();

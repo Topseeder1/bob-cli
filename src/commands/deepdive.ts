@@ -21,6 +21,7 @@ import {
   renderConstraintsTile,
   ResponseMetadata,
 } from '../ui/chat-renderer.js';
+import { detectReference, fetchAvailableReferences, fetchProjectFiles, loadStickyReference, saveStickyReference } from '../core/reference-resolver.js';
 
 // ─── DESIGN TOKENS ───
 const BRAND_SECONDARY = chalk.hex('#FFAB00');
@@ -41,7 +42,6 @@ export function registerDeepDiveCommand(program: Command): void {
       const config = getConfig();
       if (!config.loggedIn || !config.authToken) { console.log(''); console.log(ERROR('  ❌ Not logged in. Deep dives require Tier 3.')); console.log(''); return; }
 
-      // ─── Read conversation ID from project scope ───
       const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
       if (!conversationId) { console.log(''); console.log(ERROR('  ❌ No active conversation.')); console.log(''); return; }
 
@@ -84,7 +84,6 @@ export function registerDeepDiveCommand(program: Command): void {
       const config = getConfig();
       if (!config.loggedIn || !config.authToken) { console.log(''); console.log(ERROR('  ❌ Not logged in. Deep dives require Tier 3.')); console.log(''); return; }
 
-      // ─── Read conversation ID from project scope ───
       const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
       if (!conversationId) { console.log(''); console.log(ERROR('  ❌ No active conversation.')); console.log(''); return; }
 
@@ -139,7 +138,6 @@ export function registerDeepDiveCommand(program: Command): void {
       const config = getConfig();
       if (!config.loggedIn || !config.authToken) { console.log(''); console.log(ERROR('  ❌ Not logged in. Deep dives require Tier 3.')); console.log(MUTED('  Run `bob login` to authenticate.')); console.log(''); return; }
 
-      // ─── Read conversation ID from project scope ───
       const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
       if (!conversationId) { console.log(''); console.log(ERROR('  ❌ No active conversation.')); console.log(MUTED('  Join one with `bob conversations join` first.')); console.log(''); return; }
 
@@ -199,17 +197,31 @@ export async function enterDeepDive(config: any, conversationId: string, rl: rea
   }
 }
 
-async function runDeepDiveSession(config: any, conversationId: string, parentMessageId: string, initiatingPrompt: string, rl: readline.Interface): Promise<void> {
+async function runDeepDiveSession(
+  config: any,
+  conversationId: string,
+  parentMessageId: string,
+  initiatingPrompt: string,
+  rl: readline.Interface
+): Promise<void> {
   const previewText = initiatingPrompt.slice(0, 50) + (initiatingPrompt.length > 50 ? '...' : '');
   const isLocalProvider = config.provider === 'local' && config.localEndpoint;
+
+  // ─── REFERENCE STATE — each deep dive has its own sticky ref ───
+  const domain = config.email?.split('@').pop()?.toLowerCase() ?? '';
+  const uid = config.uid ?? '';
+  const threadDocPath = `Organizations/${domain}/OrgUsers/${uid}/BobGlobalChat/${conversationId}/Messages/${parentMessageId}/sandbox/thread`;
+  let stickyRef = await loadStickyReference(threadDocPath);
 
   console.log('');
   console.log(MODE_DEEPDIVE('  ╔══════════════════════════════════════════════════════╗'));
   console.log(MODE_DEEPDIVE('  ║') + chalk.bold(MODE_DEEPDIVE('  🤿 DEEP DIVE                                       ')) + MODE_DEEPDIVE('║'));
   console.log(MODE_DEEPDIVE('  ║') + MUTED(`  On: "${previewText}"`));
   if (isLocalProvider) { console.log(MODE_DEEPDIVE('  ║') + MUTED('  Provider: Local model (sovereign handoff)')); }
+  if (stickyRef) { console.log(MODE_DEEPDIVE('  ║') + AMBER(`  📌 Sticky ref: /${stickyRef.alias}`)); }
   console.log(MODE_DEEPDIVE('  ╠══════════════════════════════════════════════════════╣'));
-  console.log(MODE_DEEPDIVE('  ║') + MUTED('  Commands: /surface  /promote  /clear  /constraints  ') + MODE_DEEPDIVE('║'));
+  console.log(MODE_DEEPDIVE('  ║') + MUTED('  /surface  /promote  /clear  /constraints           ') + MODE_DEEPDIVE('║'));
+  console.log(MODE_DEEPDIVE('  ║') + MUTED('  /ref  /pin  — manage reference projects            ') + MODE_DEEPDIVE('║'));
   console.log(MODE_DEEPDIVE('  ╚══════════════════════════════════════════════════════╝'));
   console.log('');
 
@@ -218,7 +230,11 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
 
   return new Promise<void>((resolve) => {
     const deepDivePrompt = (): void => {
-      rl.question(MODE_DEEPDIVE('  🤿 You: '), async (input) => {
+      const promptText = stickyRef
+        ? MODE_DEEPDIVE(`  📌 /${stickyRef!.alias} 🤿 › `)
+        : MODE_DEEPDIVE('  🤿 You: ');
+
+      rl.question(promptText, async (input) => {
         const trimmed = input.trim();
         if (!trimmed) { deepDivePrompt(); return; }
 
@@ -289,6 +305,35 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
           return;
         }
 
+        // ─── /ref — Browse reference projects ───
+        if (trimmed === '/ref') {
+          stickyRef = await handleDeepDiveRefBrowser(domain, uid, threadDocPath, rl);
+          deepDivePrompt(); return;
+        }
+
+        // ─── /pin — Toggle sticky reference ───
+        if (trimmed === '/pin') {
+          if (stickyRef) {
+            await saveStickyReference(threadDocPath, null, false);
+            stickyRef = null;
+            console.log('');
+            console.log(MUTED('  📌 Sticky reference cleared.'));
+            console.log('');
+          } else {
+            stickyRef = await handleDeepDiveRefBrowser(domain, uid, threadDocPath, rl);
+          }
+          deepDivePrompt(); return;
+        }
+
+        // ─── Detect inline reference — falls back to sticky ───
+        const inlineRef = detectReference(trimmed);
+        const activeRef = inlineRef ?? stickyRef ?? null;
+
+        if (activeRef) {
+          console.log('');
+          console.log(AMBER(`  📎 Referencing /${activeRef.alias}${activeRef.filename ? ` — ${activeRef.filename}` : ''}...`));
+        }
+
         renderUserMessage(trimmed);
         startElapsedTimer();
 
@@ -317,13 +362,27 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
               activePersonaId: null,
               localContext,
               cliMode: true,
+              // ─── REFERENCE PARAMS ───
+              ...(activeRef && { referenceAlias: activeRef.alias }),
+              ...(activeRef?.filename && { referenceFilename: activeRef.filename }),
             });
             if (!handoffResult?.isHandoff || !handoffResult?.masterPrompt) { throw new Error('Handoff failed — no master prompt returned.'); }
             const localMessages: LocalChatMessage[] = [{ role: 'user', content: handoffResult.masterPrompt }];
             responseText = await callLocalModel(config.localEndpoint!, localMessages);
             await callCloudFunction('saveCLIDeepDiveMessage', { conversationId, parentMessageId, message: responseText, sender: 'bob', origin: 'local-sovereign' });
           } else {
-            await callCloudFunction('generateDeepDiveResponse', { conversationId, parentMessageId, userMessage: trimmed, isLocalModel: false, activePersonaId: null, localContext, cliMode: true });
+            await callCloudFunction('generateDeepDiveResponse', {
+              conversationId,
+              parentMessageId,
+              userMessage: trimmed,
+              isLocalModel: false,
+              activePersonaId: null,
+              localContext,
+              cliMode: true,
+              // ─── REFERENCE PARAMS ───
+              ...(activeRef && { referenceAlias: activeRef.alias }),
+              ...(activeRef?.filename && { referenceFilename: activeRef.filename }),
+            });
             const latestResult = await callCloudFunction('listCLIDeepDives', { conversationId, action: 'getLatestSandboxMessage', parentMessageId });
             responseText = latestResult?.message || 'Deep dive response saved.';
           }
@@ -365,4 +424,100 @@ async function runDeepDiveSession(config: any, conversationId: string, parentMes
 
     deepDivePrompt();
   });
+}
+
+// ─── DEEP DIVE REF BROWSER ───────────────────────────────────────
+
+async function handleDeepDiveRefBrowser(
+  domain: string,
+  uid: string,
+  threadDocPath: string,
+  rl: readline.Interface
+): Promise<{ alias: string; filename?: string } | null> {
+  const refs = await fetchAvailableReferences(domain, uid);
+
+  if (refs.length === 0) {
+    console.log('');
+    console.log(MUTED('  No shared references available for your account.'));
+    console.log('');
+    return null;
+  }
+
+  console.log('');
+  console.log(AMBER('  ╔══════════════════════════════════════════╗'));
+  console.log(AMBER('  ║') + chalk.bold('  📎 AVAILABLE REFERENCES                ') + AMBER('║'));
+  console.log(AMBER('  ╠══════════════════════════════════════════╣'));
+
+  refs.forEach((ref, i) => {
+    const line = `  ${String(i + 1).padStart(2)}. /${ref.alias.padEnd(18)} ${MUTED(ref.repoDisplayName)}`;
+    console.log(AMBER('  ║') + line);
+  });
+
+  console.log(AMBER('  ╠══════════════════════════════════════════╣'));
+  console.log(AMBER('  ║') + MUTED('  Enter number to select, 0 to cancel     ') + AMBER('║'));
+  console.log(AMBER('  ╚══════════════════════════════════════════╝'));
+  console.log('');
+
+  const answer = await new Promise<string>(resolve => {
+    rl.question(AMBER('  Select reference: '), resolve);
+  });
+
+  const num = parseInt(answer.trim());
+  if (isNaN(num) || num === 0 || num < 1 || num > refs.length) {
+    console.log(MUTED('  Cancelled.'));
+    console.log('');
+    return null;
+  }
+
+  const selected = refs[num - 1];
+
+  const modeAnswer = await new Promise<string>(resolve => {
+    rl.question(AMBER(`  /${selected.alias} — whole project (p) or specific file (f)? `), resolve);
+  });
+
+  if (modeAnswer.trim().toLowerCase() === 'f') {
+    const filterAnswer = await new Promise<string>(resolve => {
+      rl.question(AMBER('  Filter files (or Enter for all): '), resolve);
+    });
+
+    const files = await fetchProjectFiles(domain, selected.projectId, filterAnswer.trim());
+
+    if (files.length === 0) {
+      console.log(MUTED('  No files found. Referencing whole project.'));
+      console.log('');
+      return { alias: selected.alias };
+    }
+
+    console.log('');
+    files.slice(0, 20).forEach((fp, i) => {
+      console.log(MUTED(`  ${String(i + 1).padStart(2)}. ${fp}`));
+    });
+    console.log('');
+
+    const fileAnswer = await new Promise<string>(resolve => {
+      rl.question(AMBER('  Select file (or Enter for whole project): '), resolve);
+    });
+
+    const fileNum = parseInt(fileAnswer.trim());
+    if (isNaN(fileNum) || fileNum < 1 || fileNum > files.length) {
+      await saveStickyReference(threadDocPath, selected.alias, true);
+      console.log('');
+      console.log(AMBER(`  📌 Sticky reference set: /${selected.alias}`));
+      console.log('');
+      return { alias: selected.alias };
+    }
+
+    const filename = files[fileNum - 1];
+    console.log('');
+    console.log(AMBER(`  📎 File reference: /${selected.alias} — ${filename}`));
+    console.log('');
+    return { alias: selected.alias, filename };
+  }
+
+  // Whole project — save as sticky for this deep dive thread
+  await saveStickyReference(threadDocPath, selected.alias, true);
+  console.log('');
+  console.log(AMBER(`  📌 Sticky reference set: /${selected.alias}`));
+  console.log('');
+  return { alias: selected.alias };
 }
