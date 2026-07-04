@@ -7,7 +7,7 @@ import * as readline from 'readline';
 import { getConfig, setConfigValue } from '../core/config-store.js';
 import { callCloudFunction } from '../core/api-client.js';
 import { renderMarkdown } from '../ui/renderer.js';
-import { setActiveConversationId } from '../core/project-map.js';
+import { getActiveConversationId, setActiveConversationId } from '../core/project-map.js';
 
 // ─── DESIGN TOKENS ───
 const BRAND_PRIMARY = chalk.hex('#E66F24');
@@ -53,18 +53,21 @@ export function registerRemoteCommand(program: Command): void {
         return;
       }
 
-      if (options.new || !config.conversationId) {
+      // ─── PROJECT-SCOPED conversation ID ───
+      const activeConvoId = getActiveConversationId(process.cwd()) || config.conversationId;
+
+      if (options.new || !activeConvoId) {
         await discoverAndConnect(config);
         return;
       }
 
       if (options.interactive || (!type && !options.new)) {
-        await runInteractiveRemote(config, options.session);
+        await runInteractiveRemote(config, activeConvoId, options.session);
         return;
       }
 
       if (!type) {
-        await showConnectionStatus(config);
+        await showConnectionStatus(config, activeConvoId);
         return;
       }
 
@@ -81,7 +84,7 @@ export function registerRemoteCommand(program: Command): void {
         return;
       }
 
-      const payload: any = { conversationId: config.conversationId };
+      const payload: any = { conversationId: activeConvoId };
       if (message) payload.message = message;
       if (options.auto) payload.auto = true;
       if (options.source) payload.isSource = true;
@@ -96,17 +99,17 @@ export function registerRemoteCommand(program: Command): void {
         return;
       }
 
-      await dispatchCommand(config, type, payload, options.session);
+      await dispatchCommand(config, activeConvoId, type, payload, options.session);
     });
 }
 
-async function runInteractiveRemote(config: any, targetSession?: string): Promise<void> {
+async function runInteractiveRemote(config: any, activeConvoId: string, targetSession?: string): Promise<void> {
   const spinner = ora({ text: INFO('  Connecting to Active Bob...'), spinner: 'dots' }).start();
 
   let activeBobName = 'Unknown';
   try {
     const result = await callCloudFunction('listActiveBobs', {
-      conversationId: config.conversationId,
+      conversationId: activeConvoId,
     });
     const sessions = (result?.sessions || []).filter((s: any) => s.active);
 
@@ -131,7 +134,7 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
   console.log(BORDER('  ╔══════════════════════════════════════════════════════════╗'));
   console.log(BORDER('  ║') + INFO('  🌐 Active Bob — Remote Session') + MUTED(` (${activeBobName})`));
   console.log(BORDER('  ╠══════════════════════════════════════════════════════════╣'));
-  console.log(BORDER('  ║') + MUTED(`  Conversation: ${config.conversationId?.slice(0, 28)}...`));
+  console.log(BORDER('  ║') + MUTED(`  Conversation: ${activeConvoId?.slice(0, 28)}...`));
   console.log(BORDER('  ║') + MUTED('  Commands dispatched to the remote machine.'));
   console.log(BORDER('  ║'));
   console.log(BORDER('  ║') + chalk.white('  Slash Commands:'));
@@ -168,25 +171,25 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
 
       if (trimmed.startsWith('/consult ')) {
         const msg = trimmed.slice(9).trim().replace(/^["']|["']$/g, '');
-        if (msg) { await dispatchAndShow(config, 'consult', { message: msg }, targetSession); }
+        if (msg) { await dispatchAndShow(config, activeConvoId, 'consult', { message: msg }, targetSession); }
         else { console.log(ERROR('  ❌ Provide a message: /consult "your question"')); }
         prompt(); return;
       }
 
       if (trimmed.startsWith('/push ')) {
         const msg = trimmed.slice(6).trim().replace(/^["']|["']$/g, '');
-        if (msg) { await dispatchAndShow(config, 'push', { message: msg }, targetSession); }
+        if (msg) { await dispatchAndShow(config, activeConvoId, 'push', { message: msg }, targetSession); }
         else { console.log(ERROR('  ❌ Provide a commit message: /push "your message"')); }
         prompt(); return;
       }
 
       if (trimmed === '/index') {
-        await dispatchAndShow(config, 'index', {}, targetSession);
+        await dispatchAndShow(config, activeConvoId, 'index', {}, targetSession);
         prompt(); return;
       }
 
       if (trimmed === '/analyse' || trimmed === '/analyze') {
-        await dispatchAndShow(config, 'analyse', {}, targetSession);
+        await dispatchAndShow(config, activeConvoId, 'analyse', {}, targetSession);
         prompt(); return;
       }
 
@@ -196,7 +199,7 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
         const backupPayload: any = {};
         if (flag === 'source') backupPayload.isSource = true;
         if (flag === 'global') backupPayload.isGlobal = true;
-        await dispatchAndShow(config, 'backup', backupPayload, targetSession);
+        await dispatchAndShow(config, activeConvoId, 'backup', backupPayload, targetSession);
         prompt(); return;
       }
 
@@ -206,11 +209,11 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
         const restorePayload: any = {};
         if (flag === 'source') restorePayload.isSource = true;
         if (flag === 'global') restorePayload.isGlobal = true;
-        await dispatchAndShow(config, 'restore', restorePayload, targetSession);
+        await dispatchAndShow(config, activeConvoId, 'restore', restorePayload, targetSession);
         prompt(); return;
       }
 
-      await dispatchAndShow(config, 'chat', { message: trimmed }, targetSession);
+      await dispatchAndShow(config, activeConvoId, 'chat', { message: trimmed }, targetSession);
       prompt();
     });
   };
@@ -218,7 +221,7 @@ async function runInteractiveRemote(config: any, targetSession?: string): Promis
   prompt();
 }
 
-async function dispatchAndShow(config: any, type: string, payload: any, targetSession?: string): Promise<void> {
+async function dispatchAndShow(config: any, activeConvoId: string, type: string, payload: any, targetSession?: string): Promise<void> {
   const spinner = ora({
     text: BRAND_SECONDARY(`  📡 Active Bob executing: ${type}...`),
     spinner: 'dots',
@@ -229,9 +232,9 @@ async function dispatchAndShow(config: any, type: string, payload: any, targetSe
 
   try {
     const result = await callCloudFunction('sendRemoteCommand', {
-      conversationId: config.conversationId,
+      conversationId: activeConvoId,
       type,
-      payload: { ...payload, conversationId: config.conversationId },
+      payload: { ...payload, conversationId: activeConvoId },
       targetSession: targetSession || null,
     });
 
@@ -248,7 +251,7 @@ async function dispatchAndShow(config: any, type: string, payload: any, targetSe
       pollCount++;
       try {
         const pollResult = await callCloudFunction('getRemoteCommandResult', {
-          conversationId: config.conversationId,
+          conversationId: activeConvoId,
           commandId,
         });
 
@@ -315,19 +318,11 @@ async function dispatchAndShow(config: any, type: string, payload: any, targetSe
   }
 }
 
-async function showConnectionStatus(config: any): Promise<void> {
-  if (!config.conversationId) {
-    console.log('');
-    console.log(ERROR('  🔴 No conversation selected.'));
-    console.log(MUTED('  Run `bob remote --new` to find and connect to an Active Bob.'));
-    console.log('');
-    return;
-  }
-
+async function showConnectionStatus(config: any, activeConvoId: string): Promise<void> {
   const spinner = ora({ text: INFO('  Checking Active Bob status...'), spinner: 'dots' }).start();
 
   try {
-    const result = await callCloudFunction('listActiveBobs', { conversationId: config.conversationId });
+    const result = await callCloudFunction('listActiveBobs', { conversationId: activeConvoId });
     spinner.stop();
     const sessions = result?.sessions || [];
     const activeSessions = sessions.filter((s: any) => s.active);
@@ -336,7 +331,7 @@ async function showConnectionStatus(config: any): Promise<void> {
     console.log(BORDER('  ╔══════════════════════════════════════════════════════════╗'));
     console.log(BORDER('  ║') + INFO('  🌐 Remote Connection Status'));
     console.log(BORDER('  ╠══════════════════════════════════════════════════════════╣'));
-    console.log(BORDER('  ║') + MUTED(`  Conversation: ${config.conversationId?.slice(0, 28)}...`));
+    console.log(BORDER('  ║') + MUTED(`  Conversation: ${activeConvoId?.slice(0, 28)}...`));
     console.log(BORDER('  ║'));
 
     if (activeSessions.length === 0) {
@@ -439,8 +434,8 @@ async function discoverAndConnect(config: any): Promise<void> {
   }
 }
 
-async function dispatchCommand(config: any, type: string, payload: any, targetSession?: string): Promise<void> {
-  await dispatchAndShow(config, type, payload, targetSession);
+async function dispatchCommand(config: any, activeConvoId: string, type: string, payload: any, targetSession?: string): Promise<void> {
+  await dispatchAndShow(config, activeConvoId, type, payload, targetSession);
 }
 
 function getTimeAgo(isoDate: string): string {

@@ -25,6 +25,7 @@ import {
   updateManifestProgress,
   saveSummaries,
   saveDependencies,
+  getActiveConversationId,
 } from '../core/project-map.js';
 
 const GREEN = chalk.hex('#66BB6A');
@@ -67,7 +68,7 @@ const TIER_CONFIGS: Record<string, TierConfig> = {
 
 const BLOCKED_TIERS = ['Explore', 'Free', 'free', 'explore'];
 
-// ─── ENCRYPTION HELPERS (for remote backup) ──────────────────────
+// ─── ENCRYPTION HELPERS ──────────────────────────────────────────
 
 function deriveKey(uid: string, salt: string): Buffer {
   return crypto.pbkdf2Sync(uid, salt, 100000, 32, 'sha256');
@@ -150,7 +151,10 @@ export function registerServeCommand(program: Command): void {
         return;
       }
 
-      if (!config.conversationId) {
+      // ─── PROJECT-SCOPED conversation ID ───
+      const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
+
+      if (!conversationId) {
         console.log('');
         console.log(RED('  ❌ No active conversation.'));
         console.log(GRAY('  Active Bob must be bound to a conversation.'));
@@ -212,12 +216,14 @@ export function registerServeCommand(program: Command): void {
       const projectName = path.basename(process.cwd());
       const sessionId = `${machineId}_${Date.now()}`;
 
-      await startActiveBob(config, sessionId, machineId, projectName, tierConfig, userTier);
+      // ─── Pass resolved conversationId into startActiveBob ───
+      await startActiveBob(config, conversationId, sessionId, machineId, projectName, tierConfig, userTier);
     });
 }
 
 async function startActiveBob(
   config: any,
+  conversationId: string,
   sessionId: string,
   machineId: string,
   projectName: string,
@@ -232,7 +238,7 @@ async function startActiveBob(
   console.log(BORDER('  ║') + GRAY(`  Machine:  ${machineId}`));
   console.log(BORDER('  ║') + GRAY(`  Project:  ${projectName} (${process.cwd()})`));
   console.log(BORDER('  ║') + GRAY(`  Session:  ${sessionId.slice(0, 30)}...`));
-  console.log(BORDER('  ║') + GRAY(`  Convo:    ${config.conversationId?.slice(0, 24)}...`));
+  console.log(BORDER('  ║') + GRAY(`  Convo:    ${conversationId?.slice(0, 24)}...`));
   console.log(BORDER('  ║') + AMBER(`  Tier:     ${userTier}`));
   console.log(BORDER('  ║') + GRAY(`  Polling:  every ${tierConfig.activeInterval / 1000}s`));
   if (tierConfig.sleepInterval) {
@@ -254,7 +260,7 @@ async function startActiveBob(
   // ─── REGISTER SESSION ───
   try {
     await callCloudFunction('registerRemoteDaemonSession', {
-      conversationId: config.conversationId,
+      conversationId,
       sessionId,
       machineId,
       projectName,
@@ -279,7 +285,7 @@ async function startActiveBob(
     console.log(GRAY('  🔌 Shutting down Active Bob...'));
     try {
       await callCloudFunction('deregisterRemoteDaemonSession', {
-        conversationId: config.conversationId,
+        conversationId,
         sessionId,
       });
       console.log(GRAY('  ✅ Session deregistered. Bob is offline.'));
@@ -311,7 +317,7 @@ async function startActiveBob(
       console.log('');
       try {
         await callCloudFunction('deregisterRemoteDaemonSession', {
-          conversationId: config.conversationId,
+          conversationId,
           sessionId,
         });
       } catch { }
@@ -335,7 +341,7 @@ async function startActiveBob(
     // ─── POLL ───
     try {
       const result = await callCloudFunction('pollRemoteCommands', {
-        conversationId: config.conversationId,
+        conversationId,
         sessionId,
       });
 
@@ -356,7 +362,7 @@ async function startActiveBob(
         const commandResult = await executeRemoteCommand(type, payload, config);
 
         await callCloudFunction('completeRemoteCommand', {
-          conversationId: config.conversationId,
+          conversationId,
           commandId: cmd.id,
           sessionId,
           result: commandResult,
@@ -430,7 +436,6 @@ async function executeChat(payload: any, config: any): Promise<any> {
     ];
 
     const response = await callLocalModel(config.localEndpoint!, messages);
-
     const proposed = extractProposedFile(response);
     if (proposed) await proposeAndWriteFile(proposed, true);
 
@@ -473,7 +478,6 @@ async function executeConsult(payload: any, config: any): Promise<any> {
     ];
 
     const response = await callLocalModel(config.localEndpoint!, messages);
-
     return { success: true, text: response, referencedFiles: selectedFiles };
   } catch (error: any) {
     return { success: false, error: error.message };
@@ -548,7 +552,6 @@ async function executeIndex(payload: any, config: any): Promise<any> {
     const summaries: Record<string, string> = {};
     let completed = 0;
 
-    // ─── Phase 1: Summarize each file ────────────────────────
     for (const filePath of files) {
       const absolutePath = path.join(cwd, filePath);
       let content: string;
@@ -591,7 +594,6 @@ async function executeIndex(payload: any, config: any): Promise<any> {
       updateManifestProgress(runDir, completed);
     }
 
-    // ─── Phase 2: Dependency mapping ─────────────────────────
     let dependencies: Record<string, string[]> = {};
     try {
       const summaryContext = Object.entries(summaries)
@@ -762,7 +764,6 @@ async function executeBackup(payload: any, config: any): Promise<any> {
   const cwd = process.cwd();
   const projectName = path.basename(cwd);
 
-  // ─── Resolve what to back up ──────────────────────────────
   let sourceDir: string;
   let displayLabel: string;
 
@@ -786,7 +787,6 @@ async function executeBackup(payload: any, config: any): Promise<any> {
   const encryptedPath = path.join(tmpDir, 'bob-backup.bob.enc');
 
   try {
-    // ─── Compress ─────────────────────────────────────────────
     const tar = await import('tar');
     const relativeSource = path.relative(os.homedir(), sourceDir);
 
@@ -801,10 +801,8 @@ async function executeBackup(payload: any, config: any): Promise<any> {
       ? `${(archiveStats.size / 1024).toFixed(1)} KB`
       : `${(archiveStats.size / (1024 * 1024)).toFixed(1)} MB`;
 
-    // ─── Encrypt ──────────────────────────────────────────────
     encrypt(archivePath, encryptedPath, config.uid);
 
-    // ─── Request upload URL ───────────────────────────────────
     let uploadResult: any;
     const action = archiveName
       ? (isSource ? 'requestSourceArchiveUpload' : 'requestArchiveUpload')
@@ -819,7 +817,6 @@ async function executeBackup(payload: any, config: any): Promise<any> {
       estimatedSizeGB,
     });
 
-    // ─── Upload to S3 ─────────────────────────────────────────
     const encryptedData = fs.readFileSync(encryptedPath);
     await axios.put(uploadResult.uploadUrl, encryptedData, {
       headers: {
@@ -830,7 +827,6 @@ async function executeBackup(payload: any, config: any): Promise<any> {
       maxContentLength: Infinity,
     });
 
-    // ─── Record usage ─────────────────────────────────────────
     const recordAction = archiveName
       ? (isSource ? 'recordSourceArchiveUsage' : 'recordArchiveUsage')
       : (isSource ? 'recordSourceUsage' : 'recordUsage');
@@ -881,27 +877,22 @@ async function executeRestore(payload: any, config: any): Promise<any> {
   const decryptedPath = path.join(tmpDir, 'bob-backup.tar.gz');
 
   try {
-    // ─── Get download URL for latest revision ─────────────────
     const downloadResult = await callCloudFunction('cliBackupLicense', {
       action: isSource ? 'requestSourceDownload' : 'requestDownload',
       projectName,
       isGlobal,
       isSource,
-      s3VersionId: null, // always latest in headless mode
+      s3VersionId: null,
     });
 
-    // ─── Download ─────────────────────────────────────────────
     const response = await axios.get(downloadResult.downloadUrl, {
       responseType: 'arraybuffer',
       maxContentLength: Infinity,
     });
 
     fs.writeFileSync(downloadPath, Buffer.from(response.data));
-
-    // ─── Decrypt ──────────────────────────────────────────────
     decrypt(downloadPath, decryptedPath, config.uid);
 
-    // ─── Back up current state ────────────────────────────────
     let restoreTarget: string;
     if (isGlobal) {
       restoreTarget = BOB_DIR;
@@ -916,7 +907,6 @@ async function executeRestore(payload: any, config: any): Promise<any> {
       fs.cpSync(restoreTarget, preRestoreBackup, { recursive: true });
     }
 
-    // ─── Extract ──────────────────────────────────────────────
     const tar = await import('tar');
     if (isSource) {
       const parentDir = path.dirname(cwd);

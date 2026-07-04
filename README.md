@@ -621,6 +621,13 @@ Tier 1 — Local (Free)              Tier 3 — Platform (Subscription)
 Same commands. Scale without changing tools.
 
 ---
+## What's New in v1.2.0
+
+- **Per-project conversation scoping** — `conversationId` is now stored in each project's `~/.bob/projects/{name}/project.json` instead of the global config. When you `cd` between projects, `bob chat` automatically resumes the correct conversation for that project. No more cross-contamination between codebases.
+- **Backward compatible migration** — Existing installs are unaffected. If no project-level `conversationId` exists yet, Bob falls back to the global config value seamlessly. The new value is written to `project.json` on first interaction.
+- **`project.json` now tracks `lastActive`** — Every time a conversation ID is written to a project, the `lastActive` timestamp is updated. Useful for future project-aware features.
+- **Bug fix: `remote.ts` conversation ID** — `bob remote` now reads the active conversation ID from project scope, not the global config. Connecting to an Active Bob correctly reflects the current project's conversation.
+- **Bug fix: `serve.ts` conversation ID** — `bob serve` now resolves the conversation ID from project scope before registering the daemon session, ensuring SovereignLink binds to the correct project conversation.
 
 ## What's New in v1.1.0
 
