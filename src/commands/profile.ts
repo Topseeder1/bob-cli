@@ -6,6 +6,8 @@ import { callLocalModel, LocalChatMessage } from '../ai/providers/local.js';
 import { isAuthenticated } from '../core/api-client.js';
 import { runCloudProfiler, ProfileScope } from '../core/cloud-profiler.js';
 import { renderProfileDashboard } from '../ui/profile-dashboard.js';
+import { runProfileViewer } from '../ui/profile-viewer.js';
+import { renderProfileTrends } from '../ui/profile-trends.js';
 import {
   saveDailyProfile,
   saveWeeklyProfile,
@@ -21,26 +23,45 @@ import {
 } from '../core/profile-store.js';
 import * as path from 'path';
 
-const AMBER = chalk.hex('#FFAB00');
-const GREEN = chalk.hex('#66BB6A');
-const BLUE = chalk.hex('#42A5F5');
-const GRAY = chalk.gray;
-const CYAN = chalk.cyan;
-const RED = chalk.hex('#EF5350');
+// ─── DESIGN TOKENS ───
+const AMBER  = chalk.hex('#FFAB00');
+const GREEN  = chalk.hex('#66BB6A');
+const BLUE   = chalk.hex('#42A5F5');
+const GRAY   = chalk.gray;
+const CYAN   = chalk.cyan;
+const RED    = chalk.hex('#EF5350');
 const BORDER = chalk.hex('#455A64');
 
 export function registerProfileCommand(program: Command): void {
   program
     .command('profile')
     .description('Generate and view your behavioral profile — how you work, think, and communicate')
-    .option('--today', 'Generate today\'s profile from today\'s conversations')
-    .option('--week', 'Synthesize the last 7 daily profiles into a weekly profile')
-    .option('--month', 'Synthesize all dailies + weeklies into a monthly profile')
-    .option('--cloud', 'Run cloud-powered profiling (Power tier only)')
-    .option('--cloud-weekly', 'Run cloud weekly synthesis (Power tier only)')
-    .option('--cloud-monthly', 'Run cloud monthly synthesis (Power tier only)')
-    .option('--view', 'View your DNA dashboard')
-    .action(async (options: { today?: boolean; week?: boolean; month?: boolean; cloud?: boolean; cloudWeekly?: boolean; cloudMonthly?: boolean; view?: boolean }) => {
+    .option('--today',                'Generate today\'s profile from today\'s conversations')
+    .option('--week',                 'Synthesize the last 7 daily profiles into a weekly profile')
+    .option('--month',                'Synthesize all dailies + weeklies into a monthly profile')
+    .option('--cloud',                'Run cloud-powered profiling (Power tier only)')
+    .option('--cloud-weekly',         'Run cloud weekly synthesis (Power tier only)')
+    .option('--cloud-monthly',        'Run cloud monthly synthesis (Power tier only)')
+    .option('--view',                 'Open interactive profile viewer')
+    .option('--full',                 'View full profile — no truncation')
+    .option('--scope <scope>',        'Scope: all | daily | weekly | monthly')
+    .option('--section <section>',    'Section filter (depends on scope)')
+    .option('--trends',               'View sparkline trend chart')
+    .option('--trends-days <number>', 'Number of days for trend view (default: 7)', '7')
+    .action(async (options: {
+      today?:        boolean;
+      week?:         boolean;
+      month?:        boolean;
+      cloud?:        boolean;
+      cloudWeekly?:  boolean;
+      cloudMonthly?: boolean;
+      view?:         boolean;
+      full?:         boolean;
+      scope?:        string;
+      section?:      string;
+      trends?:       boolean;
+      trendsDays?:   string;
+    }) => {
       const config = getConfig();
 
       // ─── Cloud profiling paths ───
@@ -57,17 +78,41 @@ export function registerProfileCommand(program: Command): void {
         return;
       }
 
-      // ─── Dashboard view ───
+      // ─── Trends view ───
+      if (options.trends) {
+        const days = parseInt(options.trendsDays || '7', 10);
+        await renderProfileTrends(days);
+        return;
+      }
+
+      // ─── Direct scope/section/full — skip interactive selector ───
+      if (options.view && (options.scope || options.full || options.section)) {
+        const scope          = (options.scope || 'all') as any;
+        const fullMode       = options.full || false;
+        const dailySection   = (scope === 'daily'   && options.section ? options.section : 'all') as any;
+        const weeklySection  = (scope === 'weekly'  && options.section ? options.section : 'all') as any;
+        const monthlySection = (scope === 'monthly' && options.section ? options.section : 'all') as any;
+
+        await renderProfileDashboard({
+          scope,
+          dailySection,
+          weeklySection,
+          monthlySection,
+          fullMode,
+        });
+        return;
+      }
+
+      // ─── Interactive viewer ───
       if (options.view) {
-        await renderProfileDashboard();
+        await runProfileViewer();
         return;
       }
 
       // ─── Local profiling paths ───
       if (config.provider !== 'local' || !config.localEndpoint) {
-        // No local model — show dashboard if authenticated, otherwise show help
         if (isAuthenticated()) {
-          await renderProfileDashboard();
+          await runProfileViewer();
         } else {
           showLocalHelp();
         }
@@ -81,9 +126,8 @@ export function registerProfileCommand(program: Command): void {
       } else if (options.month) {
         await generateMonthlyProfile(config);
       } else {
-        // Default: show dashboard if authenticated, otherwise local DNA
         if (isAuthenticated()) {
-          await renderProfileDashboard();
+          await runProfileViewer();
         } else {
           showCurrentProfile();
         }

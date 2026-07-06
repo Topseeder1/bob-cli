@@ -24,6 +24,7 @@ import { registerBackupCommand } from '../src/commands/backup.js';
 import { registerAgentCommand } from '../src/commands/agent.js';
 import { registerAgentRunCommand } from '../src/commands/agent-run.js';
 import { registerUserBobCommand } from '../src/commands/userbob.js';
+import { registerCommandCenterCommand } from '../src/commands/command-center.js';
 
 const program = new Command();
 
@@ -82,5 +83,6 @@ registerBackupCommand(program);
 registerAgentCommand(program);
 registerAgentRunCommand(program);
 registerUserBobCommand(program);
+registerCommandCenterCommand(program);
 
 program.parse();
