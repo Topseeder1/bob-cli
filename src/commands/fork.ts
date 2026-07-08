@@ -1,5 +1,3 @@
-// File: src/commands/fork.ts
-
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getConfig, setConfigValue } from '../core/config-store.js';
@@ -8,14 +6,34 @@ import { startForkAnimation } from '../ui/animations/fork-split.js';
 import { getActiveConversationId, setActiveConversationId } from '../core/project-map.js';
 
 // ─── DESIGN TOKENS ───
-const BRAND_PRIMARY = chalk.hex('#E66F24');
+const BRAND_PRIMARY   = chalk.hex('#E66F24');
 const BRAND_SECONDARY = chalk.hex('#FFAB00');
-const SUCCESS = chalk.hex('#66BB6A');
-const INFO = chalk.hex('#26C6DA');
-const WARNING = chalk.hex('#FFC107');
-const ERROR = chalk.hex('#EF5350');
-const MUTED = chalk.hex('#78909C');
+const SUCCESS         = chalk.hex('#66BB6A');
+const INFO            = chalk.hex('#26C6DA');
+const WARNING         = chalk.hex('#FFC107');
+const ERROR           = chalk.hex('#EF5350');
+const MUTED           = chalk.hex('#78909C');
+const BORDER          = chalk.hex('#455A64');
 const MODE_CONSULTANT = chalk.hex('#AB47BC');
+
+// ─── LAYOUT HELPERS ───
+const BOX_WIDTH = 62;
+
+function pad(text: string): string {
+  const visible = text.replace(/\x1B\[[0-9;]*m/g, '');
+  const padding = BOX_WIDTH - visible.length - 2;
+  return text + ' '.repeat(Math.max(0, padding));
+}
+
+function topRule(): string { return BORDER('  ╔' + '═'.repeat(BOX_WIDTH) + '╗'); }
+function botRule(): string { return BORDER('  ╚' + '═'.repeat(BOX_WIDTH) + '╝'); }
+function hRule():   string { return BORDER('  ╠' + '═'.repeat(BOX_WIDTH) + '╣'); }
+function row(content: string): string {
+  return BORDER('  ║ ') + pad(content) + BORDER(' ║');
+}
+function emptyRow(): string {
+  return BORDER('  ║') + ' '.repeat(BOX_WIDTH) + BORDER('║');
+}
 
 export function registerForkCommand(program: Command): void {
   program
@@ -49,9 +67,9 @@ export function registerForkCommand(program: Command): void {
 
       const forkPromise = callCloudFunction('createConversationFork', {
         parentConversationId: parentConvoId,
-        forkTitle: title,
-        userEmail: config.email,
-        userId: config.uid,
+        forkTitle:            title,
+        userEmail:            config.email,
+        userId:               config.uid,
       });
 
       const animation = startForkAnimation('Parent', title);
@@ -66,32 +84,40 @@ export function registerForkCommand(program: Command): void {
           setActiveConversationId(result.conversationId, process.cwd());
           setConfigValue('conversationId', result.conversationId);
 
+          // ─── Success card ───
           console.log('');
-          console.log(SUCCESS(`  ✅ Fork created: "${title}"`));
-          console.log(MUTED(`  Session: ${result.conversationId.slice(0, 24)}...`));
-          console.log(MUTED('  Your next `bob chat` message continues in this fork.'));
-          console.log(MUTED(`  🔗 https://bobs-workshop.web.app/#/bobcodeassistant/${result.conversationId}`));
+          console.log(topRule());
+          console.log(row(SUCCESS(`✅  Fork created: "${title}"`)));
+          console.log(hRule());
+          console.log(row(MUTED('▸ Session: ') + chalk.white(result.conversationId.slice(0, 24) + '...')));
+          console.log(row(MUTED('▸ Your next `bob chat` continues in this fork.')));
+          console.log(row(MUTED('▸ 🔗 https://bobs-workshop.web.app/#/bobcodeassistant/' + result.conversationId.slice(0, 20) + '...')));
+          console.log(emptyRow());
+          console.log(botRule());
           console.log('');
 
+          // ─── Kickstart message ───
           if (result.kickstartMessage) {
-            console.log(MUTED('  ─────────────────────────────────────'));
-            console.log(chalk.bold(INFO('  🤖 Bob:')));
-            console.log('');
+            console.log(topRule());
+            console.log(row(INFO('🤖  Bob:')));
+            console.log(hRule());
             for (const line of result.kickstartMessage.split('\n')) {
-              console.log(`  ${line}`);
+              console.log(row(chalk.white(`  ${line}`)));
             }
-            console.log('');
-            console.log(MUTED('  ─────────────────────────────────────'));
+            console.log(emptyRow());
+            console.log(botRule());
             console.log('');
           }
 
+          // ─── Key points ───
           if (result.keyPoints && result.keyPoints.length > 0) {
             console.log(MUTED('  📋 Context carried forward:'));
             for (const point of result.keyPoints.slice(0, 4)) {
-              console.log(MUTED(`    • ${point}`));
+              console.log(MUTED(`    ▸ ${point}`));
             }
             console.log('');
           }
+
         } else {
           console.log('');
           console.log(ERROR('  ❌ Fork failed — no conversation ID returned.'));
@@ -133,28 +159,34 @@ export function registerForkCommand(program: Command): void {
 
       try {
         const result = await callCloudFunction('listConversationForks', { conversationId });
-
-        const forks = result.forks || [];
+        const forks  = result.forks || [];
 
         console.log('');
-        console.log(chalk.bold(MODE_CONSULTANT('  🔀 Forks')));
-        console.log(MUTED('  ─────────────────────────────────────'));
+        console.log(topRule());
+        console.log(row(MODE_CONSULTANT('🔀  FORKS')));
+        console.log(hRule());
 
         if (forks.length === 0) {
-          console.log(MUTED('  No forks yet.'));
-          console.log(MUTED('  Run `bob fork "title"` to create one.'));
+          console.log(emptyRow());
+          console.log(row(MUTED('No forks yet.')));
+          console.log(row(MUTED('Run `bob fork "title"` to create one.')));
+          console.log(emptyRow());
         } else {
           for (const fork of forks) {
-            console.log(`  ${MODE_CONSULTANT('⚡')} ${chalk.white(fork.title || 'Untitled')}`);
-            console.log(MUTED(`    ${fork.summary?.slice(0, 60) || 'No summary'}${fork.summary?.length > 60 ? '...' : ''}`));
-            console.log(MUTED(`    ID: ${fork.forkConversationId?.slice(0, 24) || fork.id.slice(0, 24)}...`));
-            console.log('');
+            console.log(emptyRow());
+            console.log(row(MODE_CONSULTANT('⚡ ') + chalk.white(fork.title || 'Untitled')));
+            console.log(row(MUTED('  ' + (fork.summary?.slice(0, 55) || 'No summary') + (fork.summary?.length > 55 ? '...' : ''))));
+            console.log(row(MUTED('  ID: ' + (fork.forkConversationId?.slice(0, 24) || fork.id.slice(0, 24)) + '...')));
           }
+          console.log(emptyRow());
         }
 
-        console.log(MUTED('  ─────────────────────────────────────'));
-        console.log(MUTED('  Join a fork: bob conversations join → select it'));
+        console.log(hRule());
+        console.log(row(MUTED('▸ Join a fork: bob conversations join → select it')));
+        console.log(emptyRow());
+        console.log(botRule());
         console.log('');
+
       } catch (error: any) {
         console.log('');
         console.log(ERROR(`  ❌ ${error.message}`));

@@ -14,15 +14,35 @@ import {
 } from '../core/project-map.js';
 
 // ─── DESIGN TOKENS ───
-const BRAND_PRIMARY = chalk.hex('#E66F24');
+const BRAND_PRIMARY   = chalk.hex('#E66F24');
 const BRAND_SECONDARY = chalk.hex('#FFAB00');
-const SUCCESS = chalk.hex('#66BB6A');
-const INFO = chalk.hex('#26C6DA');
-const WARNING = chalk.hex('#FFC107');
-const ERROR = chalk.hex('#EF5350');
-const MUTED = chalk.hex('#78909C');
+const SUCCESS         = chalk.hex('#66BB6A');
+const INFO            = chalk.hex('#26C6DA');
+const WARNING         = chalk.hex('#FFC107');
+const ERROR           = chalk.hex('#EF5350');
+const MUTED           = chalk.hex('#78909C');
+const BORDER          = chalk.hex('#455A64');
 
-const IGNORE_DIRS = ['node_modules', '.git', 'dist', 'build', '.dart_tool', '.idea', '.gradle', '.pub-cache', '.bob'];
+// ─── LAYOUT HELPERS ───
+const BOX_WIDTH = 62;
+
+function pad(text: string): string {
+  const visible = text.replace(/\x1B\[[0-9;]*m/g, '');
+  const padding = BOX_WIDTH - visible.length - 2;
+  return text + ' '.repeat(Math.max(0, padding));
+}
+
+function topRule(): string { return BORDER('  ╔' + '═'.repeat(BOX_WIDTH) + '╗'); }
+function botRule(): string { return BORDER('  ╚' + '═'.repeat(BOX_WIDTH) + '╝'); }
+function hRule():   string { return BORDER('  ╠' + '═'.repeat(BOX_WIDTH) + '╣'); }
+function row(content: string): string {
+  return BORDER('  ║ ') + pad(content) + BORDER(' ║');
+}
+function emptyRow(): string {
+  return BORDER('  ║') + ' '.repeat(BOX_WIDTH) + BORDER('║');
+}
+
+const IGNORE_DIRS     = ['node_modules', '.git', 'dist', 'build', '.dart_tool', '.idea', '.gradle', '.pub-cache', '.bob'];
 const CODE_EXTENSIONS = new Set(['.dart', '.js', '.ts', '.html', '.css', '.json', '.yaml', '.yml', '.xml', '.sh', '.md']);
 
 export function registerIndexCommand(program: any): void {
@@ -31,8 +51,8 @@ export function registerIndexCommand(program: any): void {
     .description('Index the current project — generates summaries and dependency map')
     .option('--verbose', 'Show detailed progress with summaries')
     .action(async (options: { verbose?: boolean }) => {
-      const config = getConfig();
-      const cwd = process.cwd();
+      const config      = getConfig();
+      const cwd         = process.cwd();
       const projectName = getProjectName(cwd);
 
       if (config.provider !== 'local' || !config.localEndpoint) {
@@ -44,20 +64,29 @@ export function registerIndexCommand(program: any): void {
         return;
       }
 
+      // ─── Launch header card ───
       console.log('');
-      console.log(chalk.bold(INFO(`  ⚡ Indexing project: ${projectName}`)));
-      console.log(MUTED(`  📁 ${cwd}`));
-      console.log(MUTED('  ─────────────────────────────────────'));
+      console.log(topRule());
+      console.log(row(INFO(`⚡  Indexing: ${projectName}`)));
+      console.log(row(MUTED(`▸ ${cwd}`)));
+      console.log(botRule());
       console.log('');
 
       const files = scanProjectFiles(cwd);
 
       if (files.length === 0) {
-        console.log(WARNING('  ⚠️  No code files found to index.'));
+        console.log('');
+        console.log(topRule());
+        console.log(row(WARNING('⚠️  NO FILES FOUND')));
+        console.log(hRule());
+        console.log(row(MUTED('▸ No code files found to index in this directory.')));
+        console.log(emptyRow());
+        console.log(botRule());
+        console.log('');
         return;
       }
 
-      console.log(MUTED(`  Found ${files.length} files to analyze.`));
+      console.log(MUTED(`  ▸ Found ${files.length} files to analyze.`));
       console.log('');
       console.log('');
       console.log('');
@@ -92,11 +121,11 @@ export function registerIndexCommand(program: any): void {
         try {
           const messages = [
             {
-              role: 'system' as const,
+              role:    'system' as const,
               content: 'You are a code analyst. Respond with ONLY a 2-3 sentence summary. No formatting, no headers, no bullets. Just plain sentences.',
             },
             {
-              role: 'user' as const,
+              role:    'user' as const,
               content: `Summarize this file. What does it do, what does it export, and what does it depend on?\n\nFile: ${filePath}\n\n${content}`,
             },
           ];
@@ -114,9 +143,13 @@ export function registerIndexCommand(program: any): void {
         }
       }
 
+      // ─── Dependency map card ───
       console.log('');
       console.log('');
-      console.log(INFO('  🔗 Generating dependency map...'));
+      console.log(topRule());
+      console.log(row(INFO('🔗  Generating dependency map...')));
+      console.log(botRule());
+      console.log('');
 
       try {
         const summaryContext = Object.entries(summaries)
@@ -125,17 +158,17 @@ export function registerIndexCommand(program: any): void {
 
         const messages = [
           {
-            role: 'system' as const,
+            role:    'system' as const,
             content: 'You are a senior software architect. Respond with ONLY a valid JSON object. No explanation, no markdown, no code fences. Just raw JSON.',
           },
           {
-            role: 'user' as const,
+            role:    'user' as const,
             content: `Based on these file summaries, generate a JSON dependency map. Each key is a file path, each value is an array of file paths that file depends on or interacts with. Only include direct, meaningful dependencies.\n\nFILE SUMMARIES:\n${summaryContext}\n\nRespond with ONLY the JSON object:`,
           },
         ];
 
         const depResponse = await callLocalModel(config.localEndpoint!, messages);
-        const depText = (depResponse as any).text ? (depResponse as any).text : String(depResponse);
+        const depText     = (depResponse as any).text ? (depResponse as any).text : String(depResponse);
 
         let dependencies: Record<string, string[]> = {};
         try {
@@ -152,35 +185,56 @@ export function registerIndexCommand(program: any): void {
         saveDependencies(cwd, dependencies);
 
         for (const [filePath, deps] of Object.entries(dependencies)) {
-          const taskId = filePath.replace(/[\/\\]/g, '_');
+          const taskId   = filePath.replace(/[\/\\]/g, '_');
           const taskPath = path.join(tasksDir, `${taskId}.json`);
           if (fs.existsSync(taskPath)) {
-            const task = JSON.parse(fs.readFileSync(taskPath, 'utf-8'));
+            const task       = JSON.parse(fs.readFileSync(taskPath, 'utf-8'));
             task.dependencies = deps;
             fs.writeFileSync(taskPath, JSON.stringify(task, null, 2));
           }
         }
 
         updateManifestProgress(runDir, completed, 'completed');
-        console.log(SUCCESS(`  ✅ Dependency map generated for ${Object.keys(dependencies).length} files.`));
+
+        // ─── Completion card ───
+        console.log(topRule());
+        console.log(row(SUCCESS('✅  INDEXING COMPLETE')));
+        console.log(hRule());
+        console.log(row(MUTED(`▸ Project:    `) + chalk.white(projectName)));
+        console.log(row(MUTED(`▸ Files:      `) + chalk.white(`${Object.keys(summaries).length} summarized`)));
+        console.log(row(MUTED(`▸ Deps:       `) + chalk.white(`${Object.keys(dependencies).length} files mapped`)));
+        console.log(row(MUTED(`▸ Saved to:   `) + chalk.white(`~/.bob/projects/${projectName}/analysis/`)));
+        console.log(emptyRow());
+        console.log(botRule());
+        console.log('');
+
       } catch (error: any) {
         console.log(ERROR(`  ❌ Dependency mapping failed: ${error.message}`));
         saveSummaries(cwd, summaries);
         saveDependencies(cwd, {});
         updateManifestProgress(runDir, completed, 'completed_partial');
-      }
 
-      console.log('');
-      console.log(chalk.bold(SUCCESS(`  ✅ Indexing complete: ${projectName}`)));
-      console.log(MUTED(`  📄 ${Object.keys(summaries).length} files summarized`));
-      console.log(MUTED(`  💾 Saved to: ~/.bob/projects/${projectName}/analysis/`));
-      console.log('');
+        // ─── Partial completion card ───
+        console.log('');
+        console.log(topRule());
+        console.log(row(WARNING('⚠️  INDEXING COMPLETE (PARTIAL)')));
+        console.log(hRule());
+        console.log(row(MUTED(`▸ Project:    `) + chalk.white(projectName)));
+        console.log(row(MUTED(`▸ Files:      `) + chalk.white(`${Object.keys(summaries).length} summarized`)));
+        console.log(row(MUTED(`▸ Deps:       `) + WARNING('dependency mapping failed')));
+        console.log(row(MUTED(`▸ Saved to:   `) + chalk.white(`~/.bob/projects/${projectName}/analysis/`)));
+        console.log(emptyRow());
+        console.log(botRule());
+        console.log('');
+      }
     });
 }
 
+// ─── SCAN PROJECT FILES ───────────────────────────────────────────
+
 function scanProjectFiles(rootDir: string, currentDir?: string, depth: number = 0): string[] {
   if (depth > 6) return [];
-  const dir = currentDir || rootDir;
+  const dir   = currentDir || rootDir;
   const files: string[] = [];
 
   try {
@@ -190,7 +244,7 @@ function scanProjectFiles(rootDir: string, currentDir?: string, depth: number = 
       if (IGNORE_DIRS.includes(entry.name)) continue;
       if (entry.name.startsWith('.')) continue;
 
-      const fullPath = path.join(dir, entry.name);
+      const fullPath     = path.join(dir, entry.name);
       const relativePath = path.relative(rootDir, fullPath).replace(/\\/g, '/');
 
       if (entry.isDirectory()) {
@@ -207,24 +261,21 @@ function scanProjectFiles(rootDir: string, currentDir?: string, depth: number = 
   return files;
 }
 
+// ─── PRINT PROGRESS ──────────────────────────────────────────────
+
 function printProgress(completed: number, total: number, filePath: string, summary: string, dependencies: string[], verbose?: boolean): void {
-  const percent = completed / total;
+  const percent   = completed / total;
   const barLength = 30;
-  const filled = Math.round(percent * barLength);
+  const filled    = Math.round(percent * barLength);
 
   let barColor: (s: string) => string;
-  if (percent < 0.25) {
-    barColor = chalk.hex('#EF5350');
-  } else if (percent < 0.5) {
-    barColor = chalk.hex('#FF8C00');
-  } else if (percent < 0.75) {
-    barColor = chalk.hex('#FFC107');
-  } else {
-    barColor = chalk.hex('#66BB6A');
-  }
+  if (percent < 0.25)      barColor = chalk.hex('#EF5350');
+  else if (percent < 0.5)  barColor = chalk.hex('#FF8C00');
+  else if (percent < 0.75) barColor = chalk.hex('#FFC107');
+  else                     barColor = chalk.hex('#66BB6A');
 
-  const filledBar = barColor('█'.repeat(filled));
-  const emptyBar = MUTED('░'.repeat(barLength - filled));
+  const filledBar   = barColor('█'.repeat(filled));
+  const emptyBar    = MUTED('░'.repeat(barLength - filled));
   const percentText = barColor(`${Math.round(percent * 100)}%`);
 
   process.stdout.write('\x1B[2K\x1B[1A\x1B[2K\x1B[1A\x1B[2K\x1B[1A\x1B[2K\r');

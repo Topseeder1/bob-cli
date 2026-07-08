@@ -5,10 +5,30 @@ import simpleGit from 'simple-git';
 
 // ─── DESIGN TOKENS ───
 const SUCCESS = chalk.hex('#66BB6A');
-const INFO = chalk.hex('#26C6DA');
+const INFO    = chalk.hex('#26C6DA');
 const WARNING = chalk.hex('#FFC107');
-const ERROR = chalk.hex('#EF5350');
-const MUTED = chalk.hex('#78909C');
+const ERROR   = chalk.hex('#EF5350');
+const MUTED   = chalk.hex('#78909C');
+const BORDER  = chalk.hex('#455A64');
+
+// ─── LAYOUT HELPERS ───
+const BOX_WIDTH = 62;
+
+function pad(text: string): string {
+  const visible = text.replace(/\x1B\[[0-9;]*m/g, '');
+  const padding = BOX_WIDTH - visible.length - 2;
+  return text + ' '.repeat(Math.max(0, padding));
+}
+
+function topRule(): string { return BORDER('  ╔' + '═'.repeat(BOX_WIDTH) + '╗'); }
+function botRule(): string { return BORDER('  ╚' + '═'.repeat(BOX_WIDTH) + '╝'); }
+function hRule():   string { return BORDER('  ╠' + '═'.repeat(BOX_WIDTH) + '╣'); }
+function row(content: string): string {
+  return BORDER('  ║ ') + pad(content) + BORDER(' ║');
+}
+function emptyRow(): string {
+  return BORDER('  ║') + ' '.repeat(BOX_WIDTH) + BORDER('║');
+}
 
 export function registerPushCommand(program: Command): void {
   program
@@ -64,7 +84,6 @@ export function registerPushCommand(program: Command): void {
         try {
           await git.push('origin', currentBranch);
         } catch (pushError: any) {
-          // If no upstream, set it
           if (pushError.message?.includes('no upstream') || pushError.message?.includes('has no upstream')) {
             await git.push(['--set-upstream', 'origin', currentBranch]);
           } else {
@@ -74,28 +93,30 @@ export function registerPushCommand(program: Command): void {
 
         spinner.stop();
 
-        // ─── SUCCESS OUTPUT ───
+        // ─── SUCCESS CARD ───
         console.log('');
-        console.log(SUCCESS('  ✅ Pushed successfully'));
-        console.log(MUTED('  ─────────────────────────────────────'));
-        console.log(`  ${INFO('Commit:')}   ${commitHash}`);
-        console.log(`  ${INFO('Branch:')}   ${currentBranch}`);
-        console.log(`  ${INFO('Message:')}  ${message}`);
-        console.log(`  ${INFO('Files:')}    ${status.files.length} changed`);
-        console.log(MUTED('  ─────────────────────────────────────'));
-        console.log('');
+        console.log(topRule());
+        console.log(row(SUCCESS('✅  Pushed successfully')));
+        console.log(hRule());
+        console.log(row(MUTED('▸ Commit:  ') + chalk.white(commitHash)));
+        console.log(row(MUTED('▸ Branch:  ') + chalk.white(currentBranch)));
+        console.log(row(MUTED('▸ Message: ') + chalk.white(message)));
+        console.log(row(MUTED('▸ Files:   ') + chalk.white(`${status.files.length} changed`)));
 
-        // Show changed files
         if (status.files.length <= 10) {
+          console.log(hRule());
           for (const file of status.files) {
             const icon = file.index === '?' ? '➕' : file.index === 'D' ? '🗑️' : '✏️';
-            console.log(MUTED(`  ${icon} ${file.path}`));
+            console.log(row(MUTED(`  ${icon} ${file.path}`)));
           }
-          console.log('');
         } else {
-          console.log(MUTED(`  ${status.created.length} added, ${status.modified.length} modified, ${status.deleted.length} deleted`));
-          console.log('');
+          console.log(hRule());
+          console.log(row(MUTED(`  ${status.created.length} added, ${status.modified.length} modified, ${status.deleted.length} deleted`)));
         }
+
+        console.log(emptyRow());
+        console.log(botRule());
+        console.log('');
 
       } catch (error: any) {
         spinner.stop();

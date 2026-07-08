@@ -1,5 +1,3 @@
-// File: src/commands/userbob.ts
-
 import { Command } from 'commander';
 import chalk from 'chalk';
 import * as readline from 'readline';
@@ -13,16 +11,45 @@ import { buildDNAString } from '../core/profile-store.js';
 import { getActiveConversationId } from '../core/project-map.js';
 
 // ─── DESIGN TOKENS ───
-const PURPLE    = chalk.hex('#AB47BC');
-const AMBER     = chalk.hex('#FFAB00');
-const GREEN     = chalk.hex('#66BB6A');
-const CYAN      = chalk.hex('#26C6DA');
-const RED       = chalk.hex('#EF5350');
-const GRAY      = chalk.gray;
-const BLUE      = chalk.hex('#42A5F5');
-const BOB_COLOR = chalk.hex('#E66F24');
-const BORDER    = chalk.hex('#455A64');
-const WHITE     = chalk.white;
+const MODE_CONSULTANT = chalk.hex('#AB47BC');
+const BRAND_PRIMARY   = chalk.hex('#E66F24');
+const BRAND_SECONDARY = chalk.hex('#FFAB00');
+const SUCCESS         = chalk.hex('#66BB6A');
+const INFO            = chalk.hex('#26C6DA');
+const WARNING         = chalk.hex('#FFC107');
+const ERROR           = chalk.hex('#EF5350');
+const MUTED           = chalk.hex('#78909C');
+const BLUE            = chalk.hex('#42A5F5');
+const BORDER          = chalk.hex('#455A64');
+
+// ─── LAYOUT HELPERS ───
+const BOX_WIDTH = 62;
+
+function pad(text: string): string {
+  const visible = text.replace(/\x1B\[[0-9;]*m/g, '');
+  const padding = BOX_WIDTH - visible.length - 2;
+  return text + ' '.repeat(Math.max(0, padding));
+}
+
+function topRule(): string {
+  return BORDER('  ╔' + '═'.repeat(BOX_WIDTH) + '╗');
+}
+
+function botRule(): string {
+  return BORDER('  ╚' + '═'.repeat(BOX_WIDTH) + '╝');
+}
+
+function hRule(): string {
+  return BORDER('  ╠' + '═'.repeat(BOX_WIDTH) + '╣');
+}
+
+function row(content: string): string {
+  return BORDER('  ║ ') + pad(content) + BORDER(' ║');
+}
+
+function emptyRow(): string {
+  return BORDER('  ║') + ' '.repeat(BOX_WIDTH) + BORDER('║');
+}
 
 const BOB_DIR = path.join(os.homedir(), '.bob');
 
@@ -49,19 +76,28 @@ function clearSessionFile(): void {
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 }
 
+// ─── MISSION CONTROL HUD ─────────────────────────────────────────
+
 function renderHUD(sat: number, target: number, stag: number, stagTarget: number, div: number, divTarget: number, grading: number): void {
-  const satBar = sat >= target ? GREEN(`${sat}%`) : sat >= target * 0.7 ? AMBER(`${sat}%`) : RED(`${sat}%`);
+  const satColor = sat >= target ? SUCCESS : sat >= target * 0.7 ? BRAND_SECONDARY : ERROR;
+  const satStr   = satColor(`${sat}%`);
+
   console.log('');
-  console.log(BORDER('  ─── MISSION CONTROL ──────────────────────────────────────────'));
-  console.log(
-    `  SAT: ${satBar} → ${target}%` +
-    `  │  STAG: ${stag}/${stagTarget > 0 ? stagTarget : '∞'}` +
-    `  │  DIV: ${div}/${divTarget > 0 ? divTarget : '∞'}` +
-    `  │  GRADE: ${grading}`
-  );
-  console.log(BORDER('  ────────────────────────────────────────────────────────────────'));
+  console.log(topRule());
+  console.log(row(BRAND_PRIMARY('◉  MISSION CONTROL')));
+  console.log(hRule());
+  console.log(row(
+    MUTED('SAT: ')    + satStr + MUTED(` → ${target}%`) +
+    MUTED('  │  STAG: ') + chalk.white(`${stag}/${stagTarget > 0 ? stagTarget : '∞'}`) +
+    MUTED('  │  DIV: ')  + chalk.white(`${div}/${divTarget > 0 ? divTarget : '∞'}`) +
+    MUTED('  │  GRADE: ') + chalk.white(`${grading}`)
+  ));
+  console.log(emptyRow());
+  console.log(botRule());
   console.log('');
 }
+
+// ─── STRIP MARKDOWN ──────────────────────────────────────────────
 
 function stripMarkdown(text: string): string {
   return text
@@ -77,53 +113,57 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
+// ─── RENDER MESSAGE ───────────────────────────────────────────────
+
 function renderMessage(sender: string, message: string, audit?: any): void {
   const cleanMsg = stripMarkdown(message);
   const maxWidth = 70;
   const lines = wrapText(cleanMsg, maxWidth - 4);
 
   if (sender === 'userBob') {
-    const topBar = PURPLE(`  ┌─ UserBob ${'─'.repeat(maxWidth - 13)}┐`);
-    const bottomBar = PURPLE(`  └${'─'.repeat(maxWidth - 2)}┘`);
+    const topBar    = MODE_CONSULTANT(`  ┌─ UserBob ${'─'.repeat(maxWidth - 13)}┐`);
+    const bottomBar = MODE_CONSULTANT(`  └${'─'.repeat(maxWidth - 2)}┘`);
     console.log('');
     console.log(topBar);
     for (const line of lines) {
       const padded = line.padEnd(maxWidth - 4);
-      console.log(PURPLE('  │') + `  ${padded}` + PURPLE('  │'));
+      console.log(MODE_CONSULTANT('  │') + `  ${padded}` + MODE_CONSULTANT('  │'));
     }
     console.log(bottomBar);
 
     if (audit) {
       const chips: string[] = [];
-      if (audit.satisfactionScore !== undefined) chips.push(CYAN(`[SAT: ${audit.satisfactionScore}%]`));
+      if (audit.satisfactionScore !== undefined) chips.push(INFO(`[SAT: ${audit.satisfactionScore}%]`));
       if (audit.resemblanceScore !== undefined)  chips.push(BLUE(`[RES: ${audit.resemblanceScore}%]`));
-      if (audit.reasoning) chips.push(GRAY(`[${String(audit.reasoning).slice(0, 50)}...]`));
+      if (audit.reasoning) chips.push(MUTED(`[${String(audit.reasoning).slice(0, 50)}...]`));
       if (chips.length > 0) console.log('  ' + chips.join(' '));
     }
 
   } else if (sender === 'bob') {
-    const indent = '          ';
-    const topBar = BOB_COLOR(`${indent}┌${'─'.repeat(maxWidth - 12)}─ Bob ─┐`);
-    const bottomBar = BOB_COLOR(`${indent}└${'─'.repeat(maxWidth - 2)}┘`);
+    const indent    = '          ';
+    const topBar    = BRAND_PRIMARY(`${indent}┌${'─'.repeat(maxWidth - 12)}─ Bob ─┐`);
+    const bottomBar = BRAND_PRIMARY(`${indent}└${'─'.repeat(maxWidth - 2)}┘`);
     console.log('');
     console.log(topBar);
     for (const line of lines) {
       const padded = line.padEnd(maxWidth - 4);
-      console.log(BOB_COLOR(`${indent}│`) + `  ${padded}` + BOB_COLOR('  │'));
+      console.log(BRAND_PRIMARY(`${indent}│`) + `  ${padded}` + BRAND_PRIMARY('  │'));
     }
     console.log(bottomBar);
 
   } else if (sender === 'system') {
     console.log('');
-    console.log(CYAN('  ── SYSTEM ──────────────────────────────────────'));
-    console.log(GRAY(`  ${cleanMsg}`));
-    console.log(CYAN('  ────────────────────────────────────────────────'));
+    console.log(INFO('  ── SYSTEM ──────────────────────────────────────'));
+    console.log(MUTED(`  ${cleanMsg}`));
+    console.log(INFO('  ────────────────────────────────────────────────'));
 
   } else {
     console.log('');
-    console.log(GRAY(`  [${sender.toUpperCase()}] ${cleanMsg}`));
+    console.log(MUTED(`  [${sender.toUpperCase()}] ${cleanMsg}`));
   }
 }
+
+// ─── WRAP TEXT ────────────────────────────────────────────────────
 
 function wrapText(text: string, maxWidth: number): string[] {
   const lines: string[] = [];
@@ -152,25 +192,32 @@ function wrapText(text: string, maxWidth: number): string[] {
   return lines;
 }
 
+// ─── SLASH COMMAND HANDLER ────────────────────────────────────────
+
 async function handleSlashCommand(input: string, config: any, conversationId: string): Promise<void> {
   const trimmed = input.trim();
 
   if (trimmed === '/status') {
     try {
       const response = await callCloudFunction('getCLIConversationMessages', { conversationId, since: null });
-      const state = response?.state || {};
+      const state    = response?.state || {};
+
       console.log('');
-      console.log(AMBER('  ─── Current Parameters ───'));
-      console.log(GRAY(`  Target Satisfaction : ${state.targetSatisfaction ?? 'N/A'}`));
-      console.log(GRAY(`  Grading Standard    : ${state.gradingStandard ?? 'N/A'}`));
-      console.log(GRAY(`  Current Satisfaction: ${state.currentSatisfaction ?? 'N/A'}`));
-      console.log(GRAY(`  Stalemate           : ${state.stalemateState?.current ?? 0}/${state.stalemateState?.target ?? '∞'}`));
-      console.log(GRAY(`  Divergence          : ${state.divergenceState?.current ?? 0}/${state.divergenceState?.target ?? '∞'}`));
-      console.log(GRAY(`  Status              : ${state.simulationStatus ?? 'UNKNOWN'}`));
-      console.log(GRAY(`  Active              : ${state.userBobActive ?? 'UNKNOWN'}`));
+      console.log(topRule());
+      console.log(row(BRAND_SECONDARY('◈  CURRENT PARAMETERS')));
+      console.log(hRule());
+      console.log(row(MUTED('▸ Target Satisfaction : ') + chalk.white(state.targetSatisfaction  ?? 'N/A')));
+      console.log(row(MUTED('▸ Grading Standard    : ') + chalk.white(state.gradingStandard     ?? 'N/A')));
+      console.log(row(MUTED('▸ Current Satisfaction: ') + chalk.white(state.currentSatisfaction ?? 'N/A')));
+      console.log(row(MUTED('▸ Stalemate           : ') + chalk.white(`${state.stalemateState?.current ?? 0}/${state.stalemateState?.target ?? '∞'}`)));
+      console.log(row(MUTED('▸ Divergence          : ') + chalk.white(`${state.divergenceState?.current ?? 0}/${state.divergenceState?.target ?? '∞'}`)));
+      console.log(row(MUTED('▸ Status              : ') + chalk.white(state.simulationStatus    ?? 'UNKNOWN')));
+      console.log(row(MUTED('▸ Active              : ') + chalk.white(String(state.userBobActive ?? 'UNKNOWN'))));
+      console.log(emptyRow());
+      console.log(botRule());
       console.log('');
     } catch {
-      console.log(RED('  ❌ Could not fetch conversation state.'));
+      console.log(ERROR('  ❌ Could not fetch conversation state.'));
     }
     return;
   }
@@ -189,13 +236,13 @@ async function handleSlashCommand(input: string, config: any, conversationId: st
       await callHTTPFunction('userSimManagerService', {
         action: 'updateParameters',
         conversationId,
-        uid: config.uid,
+        uid:   config.uid,
         email: config.email,
         params: { [paramMap[param]]: value },
       });
-      console.log(GREEN(`  ✅ ${param} updated to ${value}`));
+      console.log(SUCCESS(`  ✅ ${param} updated to ${value}`));
     } catch (e: any) {
-      console.log(RED(`  ❌ Failed to update ${param}: ${e.message}`));
+      console.log(ERROR(`  ❌ Failed to update ${param}: ${e.message}`));
     }
     return;
   }
@@ -207,19 +254,21 @@ async function handleSlashCommand(input: string, config: any, conversationId: st
       await callHTTPFunction('userSimManagerService', {
         action: 'injectNote',
         conversationId,
-        uid: config.uid,
+        uid:   config.uid,
         email: config.email,
         note,
       });
-      console.log(GREEN(`  ✅ Director's note injected.`));
+      console.log(SUCCESS(`  ✅ Director's note injected.`));
     } catch (e: any) {
-      console.log(RED(`  ❌ Failed to inject note: ${e.message}`));
+      console.log(ERROR(`  ❌ Failed to inject note: ${e.message}`));
     }
     return;
   }
 
-  console.log(GRAY('  Commands: /set grading|target|stag|div <n>  /inject "note"  /status  /abort'));
+  console.log(MUTED('  Commands: /set grading|target|stag|div <n>  /inject "note"  /status  /abort'));
 }
+
+// ─── PLATFORM SIMULATION ─────────────────────────────────────────
 
 async function runPlatformSimulation(
   config: any,
@@ -231,7 +280,7 @@ async function runPlatformSimulation(
   await callHTTPFunction('userSimManagerService', {
     action: 'updateParameters',
     conversationId,
-    uid: config.uid,
+    uid:   config.uid,
     email: config.email,
     params: {
       targetSatisfaction:  params.target,
@@ -244,45 +293,52 @@ async function runPlatformSimulation(
   await callHTTPFunction('userSimManagerService', {
     action: 'injectNote',
     conversationId,
-    uid: config.uid,
+    uid:   config.uid,
     email: config.email,
-    note: mission,
+    note:  mission,
   });
 
-  console.log(GREEN('  ✅ Mission injected. Simulation is running.'));
-  console.log('');
-  console.log(BORDER('  ─── LIVE SIMULATION ──────────────────────────────────────────'));
-  console.log(GRAY('  Messages will stream below as Bob and UserBob interact.'));
-  console.log(GRAY('  You can type commands at any time:'));
-  console.log('');
-  console.log(AMBER('    /abort') + GRAY('              — Stop the simulation immediately'));
-  console.log(AMBER('    /set target 90') + GRAY('     — Update satisfaction target'));
-  console.log(AMBER('    /set grading 70') + GRAY('    — Update Teacher\'s Curve'));
-  console.log(AMBER('    /set stag 5') + GRAY('        — Update stalemate threshold'));
-  console.log(AMBER('    /set div 3') + GRAY('         — Update divergence threshold'));
-  console.log(AMBER('    /inject "note"') + GRAY('     — Inject a director\'s note mid-session'));
-  console.log(AMBER('    /status') + GRAY('            — Show current simulation parameters'));
-  console.log('');
-  console.log(BORDER('  ────────────────────────────────────────────────────────────────'));
+  console.log(SUCCESS('  ✅ Mission injected. Simulation is running.'));
   console.log('');
 
-  let running = true;
+  // ─── Live simulation header card ───
+  console.log(topRule());
+  console.log(row(BRAND_PRIMARY('◉  LIVE SIMULATION')));
+  console.log(row(MUTED('Messages will stream below as Bob and UserBob interact.')));
+  console.log(hRule());
+  console.log(row(MUTED('▸ /abort              — Stop the simulation immediately')));
+  console.log(row(MUTED('▸ /set target 90      — Update satisfaction target')));
+  console.log(row(MUTED('▸ /set grading 70     — Update Teacher\'s Curve')));
+  console.log(row(MUTED('▸ /set stag 5         — Update stalemate threshold')));
+  console.log(row(MUTED('▸ /set div 3          — Update divergence threshold')));
+  console.log(row(MUTED('▸ /inject "note"      — Inject a director\'s note mid-session')));
+  console.log(row(MUTED('▸ /status             — Show current simulation parameters')));
+  console.log(emptyRow());
+  console.log(botRule());
+  console.log('');
+
+  let running             = true;
   let lastMessageTimestamp = 0;
-  let hudState = { sat: 0, target: params.target, stag: 0, stagTarget: params.stag, div: 0, divTarget: params.div, grading: params.grading };
+  let hudState            = {
+    sat: 0, target: params.target,
+    stag: 0, stagTarget: params.stag,
+    div: 0, divTarget: params.div,
+    grading: params.grading,
+  };
 
   const sigintHandler = async () => {
     if (!running) return;
     running = false;
     console.log('\n');
-    console.log(AMBER('  🛑 Aborting simulation...'));
+    console.log(BRAND_SECONDARY('  🛑 Aborting simulation...'));
     try {
       await callHTTPFunction('userSimManagerService', {
         action: 'abortMission',
         conversationId,
-        uid: config.uid,
+        uid:   config.uid,
         email: config.email,
       });
-      console.log(GREEN('  ✅ Simulation aborted.'));
+      console.log(SUCCESS('  ✅ Simulation aborted.'));
     } catch { }
     process.exit(0);
   };
@@ -297,15 +353,15 @@ async function runPlatformSimulation(
 
     if (trimmed === '/abort' || trimmed === 'abort') {
       running = false;
-      console.log(AMBER('  🛑 Aborting simulation...'));
+      console.log(BRAND_SECONDARY('  🛑 Aborting simulation...'));
       try {
         await callHTTPFunction('userSimManagerService', {
           action: 'abortMission',
           conversationId,
-          uid: config.uid,
+          uid:   config.uid,
           email: config.email,
         });
-        console.log(GREEN('  ✅ Simulation aborted.'));
+        console.log(SUCCESS('  ✅ Simulation aborted.'));
       } catch { }
       rl.close();
       process.exit(0);
@@ -324,7 +380,7 @@ async function runPlatformSimulation(
       });
 
       const messages: any[] = response?.messages || [];
-      const state = response?.state || {};
+      const state            = response?.state    || {};
 
       for (const msg of messages) {
         renderMessage(msg.sender, msg.message, msg.simulationAudit);
@@ -333,16 +389,16 @@ async function runPlatformSimulation(
         }
       }
 
-      if (state.currentSatisfaction !== undefined) hudState.sat = state.currentSatisfaction;
-      if (state.targetSatisfaction !== undefined) hudState.target = state.targetSatisfaction;
-      if (state.gradingStandard !== undefined) hudState.grading = state.gradingStandard;
+      if (state.currentSatisfaction !== undefined) hudState.sat     = state.currentSatisfaction;
+      if (state.targetSatisfaction  !== undefined) hudState.target  = state.targetSatisfaction;
+      if (state.gradingStandard     !== undefined) hudState.grading = state.gradingStandard;
       if (state.stalemateState) {
-        hudState.stag = state.stalemateState.current ?? hudState.stag;
-        hudState.stagTarget = state.stalemateState.target ?? hudState.stagTarget;
+        hudState.stag      = state.stalemateState.current ?? hudState.stag;
+        hudState.stagTarget = state.stalemateState.target  ?? hudState.stagTarget;
       }
       if (state.divergenceState) {
-        hudState.div = state.divergenceState.current ?? hudState.div;
-        hudState.divTarget = state.divergenceState.target ?? hudState.divTarget;
+        hudState.div      = state.divergenceState.current ?? hudState.div;
+        hudState.divTarget = state.divergenceState.target  ?? hudState.divTarget;
       }
 
       if (state.userBobActive === false || (state.simulationStatus && state.simulationStatus !== 'RUNNING')) {
@@ -350,7 +406,7 @@ async function runPlatformSimulation(
           renderHUD(hudState.sat, hudState.target, hudState.stag, hudState.stagTarget, hudState.div, hudState.divTarget, hudState.grading);
         }
         console.log('');
-        console.log(AMBER(`  🏁 Simulation ended: ${state.simulationStatus || 'INACTIVE'}`));
+        console.log(BRAND_SECONDARY(`  🏁 Simulation ended: ${state.simulationStatus || 'INACTIVE'}`));
         console.log('');
         running = false;
         break;
@@ -361,13 +417,15 @@ async function runPlatformSimulation(
       }
 
     } catch (e: any) {
-      console.log(RED(`  ❌ Poll error: ${e.message}`));
+      console.log(ERROR(`  ❌ Poll error: ${e.message}`));
     }
   }
 
   rl.close();
   process.removeListener('SIGINT', sigintHandler);
 }
+
+// ─── LOCAL SIMULATION ─────────────────────────────────────────────
 
 async function runLocalSimulation(
   config: any,
@@ -378,19 +436,19 @@ async function runLocalSimulation(
 
   writeSessionFile({ active: true, turns: 0, mission });
 
-  let running = true;
-  let turns = 0;
+  let running           = true;
+  let turns             = 0;
   let conversationHistory: LocalChatMessage[] = [];
-  let sat = 0;
-  let stalemateCurrent = 0;
+  let sat               = 0;
+  let stalemateCurrent  = 0;
   let divergenceCurrent = 0;
-  let lastStatus = '';
+  let lastStatus        = '';
 
   const sigintHandler = () => {
     running = false;
     writeSessionFile({ active: false });
     clearSessionFile();
-    console.log('\n' + AMBER('  🛑 Simulation stopped.'));
+    console.log('\n' + BRAND_SECONDARY('  🛑 Simulation stopped.'));
     process.exit(0);
   };
   process.on('SIGINT', sigintHandler);
@@ -404,7 +462,7 @@ async function runLocalSimulation(
       running = false;
       writeSessionFile({ active: false });
       clearSessionFile();
-      console.log(AMBER('  🛑 Simulation stopped.'));
+      console.log(BRAND_SECONDARY('  🛑 Simulation stopped.'));
       rl.close();
       process.exit(0);
     }
@@ -416,38 +474,51 @@ async function runLocalSimulation(
         if (m[1] === 'target')  params.target  = val;
         if (m[1] === 'stag')    params.stag    = val;
         if (m[1] === 'div')     params.div     = val;
-        console.log(GREEN(`  ✅ ${m[1]} updated to ${val} (local)`));
+        console.log(SUCCESS(`  ✅ ${m[1]} updated to ${val} (local)`));
       }
     }
     if (t === '/status') {
       console.log('');
-      console.log(AMBER('  ─── Local Sim Parameters ───'));
-      console.log(GRAY(`  Target: ${params.target}  │  Grading: ${params.grading}  │  Stag Limit: ${params.stag}  │  Div Limit: ${params.div}`));
-      console.log(GRAY(`  Current SAT: ${sat}  │  Turns: ${turns}  │  Stag: ${stalemateCurrent}  │  Div: ${divergenceCurrent}`));
+      console.log(topRule());
+      console.log(row(BRAND_SECONDARY('◈  LOCAL SIM PARAMETERS')));
+      console.log(hRule());
+      console.log(row(MUTED('▸ Target:     ') + chalk.white(`${params.target}%`)));
+      console.log(row(MUTED('▸ Grading:    ') + chalk.white(`${params.grading}`)));
+      console.log(row(MUTED('▸ Stag Limit: ') + chalk.white(`${params.stag || '∞'}`)));
+      console.log(row(MUTED('▸ Div Limit:  ') + chalk.white(`${params.div  || '∞'}`)));
+      console.log(hRule());
+      console.log(row(MUTED('▸ Current SAT:') + chalk.white(`${sat}%`)));
+      console.log(row(MUTED('▸ Turns:      ') + chalk.white(`${turns}`)));
+      console.log(row(MUTED('▸ Stag:       ') + chalk.white(`${stalemateCurrent}`)));
+      console.log(row(MUTED('▸ Div:        ') + chalk.white(`${divergenceCurrent}`)));
+      console.log(emptyRow());
+      console.log(botRule());
       console.log('');
     }
   });
 
-  const bobSystem = `You are Bob — a senior AI engineering consultant. A developer's digital twin (UserBob) is evaluating your work. Respond helpfully and directly to advance the mission. Mission context: ${mission}`;
-
+  const bobSystem    = `You are Bob — a senior AI engineering consultant. A developer's digital twin (UserBob) is evaluating your work. Respond helpfully and directly to advance the mission. Mission context: ${mission}`;
   const userBobSystem = dnaString
     ? `You are a digital twin of a software engineer. You ARE this developer. Your personality, communication style, and engineering philosophy are defined below.\n\nMission: ${mission}\n\n${dnaString}\n\nAfter each Bob response, evaluate it 0-100 on how well it advances YOUR mission. Reply with your natural reaction, then append exactly one JSON footer on its own line:\n{"satisfactionScore": <0-100>, "status": "CONVERGING|STAGNATING|DIVERGING"}`
     : `You are a digital twin of a software engineer. You have no personal profile loaded — respond based on the mission context only.\n\nMission: ${mission}\n\nAfter each Bob response, evaluate it 0-100 on mission alignment. Reply with your reaction, then append exactly one JSON footer on its own line:\n{"satisfactionScore": <0-100>, "status": "CONVERGING|STAGNATING|DIVERGING"}`;
 
-  console.log(BORDER('  ─── LIVE LOCAL SIMULATION ────────────────────────────────────'));
-  console.log(GRAY('  Bob and UserBob will converse autonomously below.'));
-  console.log(GRAY('  Commands:'));
-  console.log(AMBER('    /abort') + GRAY('              — Stop the simulation'));
-  console.log(AMBER('    /set target 90') + GRAY('     — Update satisfaction target'));
-  console.log(AMBER('    /set grading 70') + GRAY('    — Update Teacher\'s Curve'));
-  console.log(AMBER('    /set stag 5') + GRAY('        — Update stalemate threshold'));
-  console.log(AMBER('    /set div 3') + GRAY('         — Update divergence threshold'));
-  console.log(AMBER('    /status') + GRAY('            — Show current parameters'));
-  console.log(BORDER('  ────────────────────────────────────────────────────────────────'));
+  // ─── Live local simulation header card ───
+  console.log(topRule());
+  console.log(row(BRAND_PRIMARY('◉  LIVE LOCAL SIMULATION')));
+  console.log(row(MUTED('Bob and UserBob will converse autonomously below.')));
+  console.log(hRule());
+  console.log(row(MUTED('▸ /abort              — Stop the simulation')));
+  console.log(row(MUTED('▸ /set target 90      — Update satisfaction target')));
+  console.log(row(MUTED('▸ /set grading 70     — Update Teacher\'s Curve')));
+  console.log(row(MUTED('▸ /set stag 5         — Update stalemate threshold')));
+  console.log(row(MUTED('▸ /set div 3          — Update divergence threshold')));
+  console.log(row(MUTED('▸ /status             — Show current parameters')));
+  console.log(emptyRow());
+  console.log(botRule());
   console.log('');
 
   const kickstart = `Mission received: "${mission}". Bob, what's your first move?`;
-  console.log(PURPLE('  UserBob > ') + WHITE(kickstart));
+  console.log(MODE_CONSULTANT('  UserBob > ') + chalk.white(kickstart));
   conversationHistory.push({ role: 'user', content: kickstart });
 
   while (running) {
@@ -462,7 +533,7 @@ async function runLocalSimulation(
         ...conversationHistory,
       ];
       const bobResponse = await callLocalModel(config.localEndpoint!, bobMessages);
-      console.log(BOB_COLOR('  Bob       > ') + WHITE(bobResponse));
+      console.log(BRAND_PRIMARY('  Bob       > ') + chalk.white(bobResponse));
       conversationHistory.push({ role: 'assistant', content: bobResponse });
 
       const ubMessages: LocalChatMessage[] = [
@@ -471,25 +542,29 @@ async function runLocalSimulation(
       ];
       const ubResponse = await callLocalModel(config.localEndpoint!, ubMessages);
 
-      const jsonMatch = ubResponse.match(/\{[^}]*"satisfactionScore"[^}]*\}/);
+      const jsonMatch    = ubResponse.match(/\{[^}]*"satisfactionScore"[^}]*\}/);
       const cleanResponse = ubResponse.replace(/\{[^}]*"satisfactionScore"[^}]*\}/, '').trim();
-      console.log(PURPLE('  UserBob > ') + WHITE(cleanResponse));
+      console.log(MODE_CONSULTANT('  UserBob > ') + chalk.white(cleanResponse));
 
       let auditChips: string[] = [];
       if (jsonMatch) {
         try {
-          const audit = JSON.parse(jsonMatch[0]);
+          const audit    = JSON.parse(jsonMatch[0]);
           const rawScore = audit.satisfactionScore || 0;
-          sat = Math.round(rawScore * (params.grading / 100));
-          lastStatus = audit.status || '';
-          auditChips = [CYAN(`[SAT: ${sat}%]`), BLUE(`[RAW: ${rawScore}]`), GRAY(`[${lastStatus}]`)];
+          sat            = Math.round(rawScore * (params.grading / 100));
+          lastStatus     = audit.status || '';
+          auditChips     = [
+            INFO(`[SAT: ${sat}%]`),
+            BLUE(`[RAW: ${rawScore}]`),
+            MUTED(`[${lastStatus}]`),
+          ];
 
           if (lastStatus === 'STAGNATING') {
             stalemateCurrent++;
             if (params.stag > 0 && stalemateCurrent >= params.stag) {
               console.log('            ' + auditChips.join(' '));
               renderHUD(sat, params.target, stalemateCurrent, params.stag, divergenceCurrent, params.div, params.grading);
-              console.log(AMBER(`  🏁 Stalemate threshold reached (${stalemateCurrent}/${params.stag}). Simulation ended.`));
+              console.log(BRAND_SECONDARY(`  🏁 Stalemate threshold reached (${stalemateCurrent}/${params.stag}). Simulation ended.`));
               running = false;
               break;
             }
@@ -499,12 +574,12 @@ async function runLocalSimulation(
             if (params.div > 0 && divergenceCurrent >= params.div) {
               console.log('            ' + auditChips.join(' '));
               renderHUD(sat, params.target, stalemateCurrent, params.stag, divergenceCurrent, params.div, params.grading);
-              console.log(AMBER(`  🏁 Divergence threshold reached (${divergenceCurrent}/${params.div}). Simulation ended.`));
+              console.log(BRAND_SECONDARY(`  🏁 Divergence threshold reached (${divergenceCurrent}/${params.div}). Simulation ended.`));
               running = false;
               break;
             }
           } else if (lastStatus === 'CONVERGING') {
-            stalemateCurrent = 0;
+            stalemateCurrent  = 0;
             divergenceCurrent = 0;
           }
         } catch { }
@@ -517,7 +592,7 @@ async function runLocalSimulation(
       renderHUD(sat, params.target, stalemateCurrent, params.stag, divergenceCurrent, params.div, params.grading);
 
       if (sat >= params.target) {
-        console.log(GREEN(`  🎯 Target satisfaction ${params.target}% reached! Mission complete.`));
+        console.log(SUCCESS(`  🎯 Target satisfaction ${params.target}% reached! Mission complete.`));
         running = false;
         break;
       }
@@ -525,8 +600,8 @@ async function runLocalSimulation(
       await new Promise(r => setTimeout(r, 1000));
 
     } catch (e: any) {
-      console.log(RED(`  ❌ Local model error: ${e.message}`));
-      console.log(GRAY('  Retrying in 3 seconds...'));
+      console.log(ERROR(`  ❌ Local model error: ${e.message}`));
+      console.log(MUTED('  Retrying in 3 seconds...'));
       await new Promise(r => setTimeout(r, 3000));
     }
   }
@@ -535,9 +610,11 @@ async function runLocalSimulation(
   rl.close();
   process.removeListener('SIGINT', sigintHandler);
   console.log('');
-  console.log(GRAY(`  Session complete. ${turns} turns processed.`));
+  console.log(MUTED(`  Session complete. ${turns} turns processed.`));
   console.log('');
 }
+
+// ─── REGISTER COMMAND ─────────────────────────────────────────────
 
 export function registerUserBobCommand(program: Command): void {
   program
@@ -563,34 +640,34 @@ export function registerUserBobCommand(program: Command): void {
 
       console.log('');
       console.log(BORDER('  ╔══════════════════════════════════════════════════════════╗'));
-      console.log(BORDER('  ║') + PURPLE('  🤖 UserBob — Digital Twin Simulation'));
-      console.log(BORDER('  ║') + GRAY(`  Mode: ${usePlatform ? 'Platform (Tier 3)' : 'Local Ollama (Tier 1)'}`));
+      console.log(BORDER('  ║ ') + MODE_CONSULTANT('🤖  UserBob — Digital Twin Simulation'));
+      console.log(BORDER('  ║ ') + MUTED(`Mode: ${usePlatform ? 'Platform (Tier 3)' : 'Local Ollama (Tier 1)'}`));
       console.log(BORDER('  ╚══════════════════════════════════════════════════════════╝'));
       console.log('');
 
       const dna = buildDNAString();
       if (dna) {
-        console.log(GREEN('  ✅ Behavioral DNA loaded.'));
+        console.log(SUCCESS('  ✅ Behavioral DNA loaded.'));
       } else {
-        console.log(AMBER('  ⚠️  No behavioral profile found.'));
-        console.log(GRAY('  UserBob performs significantly better with your DNA loaded.'));
+        console.log(BRAND_SECONDARY('  ⚠️  No behavioral profile found.'));
+        console.log(MUTED('  UserBob performs significantly better with your DNA loaded.'));
         console.log('');
 
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-        const answer = await new Promise<string>(resolve => rl.question(AMBER('  Run `bob profile --today` now? (y/n): '), resolve));
+        const rl     = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+        const answer = await new Promise<string>(resolve => rl.question(BRAND_SECONDARY('  Run `bob profile --today` now? (y/n): '), resolve));
         rl.close();
 
         if (answer.trim().toLowerCase() === 'y') {
           console.log('');
-          console.log(GRAY('  Run `bob profile --today` in a separate terminal, then re-run `bob userbob`.'));
+          console.log(MUTED('  Run `bob profile --today` in a separate terminal, then re-run `bob userbob`.'));
           process.exit(0);
         } else {
           console.log('');
-          console.log(RED('  ⚠️  Running in Generic Mode — no behavioral profile loaded.'));
-          console.log(RED('  UserBob will respond using project context only.'));
-          console.log(RED('  Responses won\'t reflect your personal communication style,'));
-          console.log(RED('  decision patterns, or engineering philosophy.'));
-          console.log(GRAY('  Run `bob profile --today` anytime to unlock full personalization.'));
+          console.log(ERROR('  ⚠️  Running in Generic Mode — no behavioral profile loaded.'));
+          console.log(ERROR('  UserBob will respond using project context only.'));
+          console.log(ERROR('  Responses won\'t reflect your personal communication style,'));
+          console.log(ERROR('  decision patterns, or engineering philosophy.'));
+          console.log(MUTED('  Run `bob profile --today` anytime to unlock full personalization.'));
           console.log('');
         }
       }
@@ -599,37 +676,36 @@ export function registerUserBobCommand(program: Command): void {
 
       if (!mission && !options.resume) {
         const mrl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-        mission = await new Promise<string>(resolve => mrl.question(AMBER('  What\'s the mission? > '), resolve));
+        mission   = await new Promise<string>(resolve => mrl.question(BRAND_SECONDARY('  What\'s the mission? > '), resolve));
         mrl.close();
         if (!mission.trim()) {
-          console.log(RED('  ❌ Mission cannot be empty. Exiting.'));
+          console.log(ERROR('  ❌ Mission cannot be empty. Exiting.'));
           process.exit(1);
         }
         mission = mission.trim();
       }
 
       console.log('');
-      console.log(GRAY(`  Target: ${params.target}%  │  Grade: ${params.grading}  │  Stag: ${params.stag || '∞'}  │  Div: ${params.div || '∞'}`));
+      console.log(MUTED(`  Target: ${params.target}%  │  Grade: ${params.grading}  │  Stag: ${params.stag || '∞'}  │  Div: ${params.div || '∞'}`));
       console.log('');
 
       if (usePlatform) {
-        // ─── Read conversation ID from project scope ───
         const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
 
         if (!conversationId) {
-          console.log(RED('  ❌ No active conversation. Run `bob conversations join` first.'));
+          console.log(ERROR('  ❌ No active conversation. Run `bob conversations join` first.'));
           process.exit(1);
         }
 
         if (options.resume) {
-          console.log(AMBER('  🔄 Resuming simulation (no new mission note)...'));
+          console.log(BRAND_SECONDARY('  🔄 Resuming simulation (no new mission note)...'));
           await callHTTPFunction('userSimManagerService', {
             action: 'resumeMission',
             conversationId,
-            uid: config.uid,
+            uid:   config.uid,
             email: config.email,
           });
-          console.log(GREEN('  ✅ Simulation resumed. Entering watch mode...'));
+          console.log(SUCCESS('  ✅ Simulation resumed. Entering watch mode...'));
           console.log('');
           await runPlatformSimulation(config, conversationId, mission || 'Resumed session', params);
         } else {
@@ -639,8 +715,8 @@ export function registerUserBobCommand(program: Command): void {
       }
 
       if (!config.localEndpoint) {
-        console.log(RED('  ❌ No local model configured.'));
-        console.log(GRAY('  Run: bob config set localEndpoint http://127.0.0.1:11434/api/chat'));
+        console.log(ERROR('  ❌ No local model configured.'));
+        console.log(MUTED('  Run: bob config set localEndpoint http://127.0.0.1:11434/api/chat'));
         process.exit(1);
       }
 

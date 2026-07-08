@@ -657,6 +657,20 @@ Tier 1 — Local (Free)              Tier 3 — Platform (Subscription)
 Same commands. Scale without changing tools.
 
 ---
+## What's New in v1.5.0
+
+- **`bob help`** — Fully redesigned help system replacing Commander's raw output. Static view shows all commands grouped by category (Conversation, Project Tools, The Crew, VaultBob, UserBob, Profile & Identity, Remote, Configuration) with descriptions, aliases, and usage examples in a styled card layout.
+- **`bob help --interactive`** — Full interactive command explorer. Navigate by category, select any command to see complete detail: what it does, every usage flag, slash commands, and tier requirements. Community & Support section with Discord and GitBook links built in.
+- **`bob whoami --config`** — Interactive settings panel launched directly from the status screen. Configure provider, local endpoint, active persona, IDRP, and auto mode — each with a description card explaining what the setting does. Current values displayed before every change.
+- **Active Persona selector** — `bob whoami --config` shows a selectable list of all available personas (built-in specialist engineers + custom file option) instead of requiring users to type persona IDs manually.
+- **Error boundaries** — Global `uncaughtException` and `unhandledRejection` handlers in `bin/bob.ts`. Raw stack traces no longer surface to users. All unexpected errors render a clean card with contextual hints and a docs link.
+- **`bob whoami` redesign** — Full `╔══╗` card layout showing auth status, tier, provider, mode, IDRP, project path, active session ID with scope label (project vs global), and web app link. Contextual footer hints adapt based on auth state and session state.
+- **`bob push` polish** — Success output now renders a `╔══╗` card showing commit hash, branch, message, and changed file list.
+- **`bob fork` polish** — Fork creation and forks list both render `╔══╗` cards. Kickstart message from Bob rendered in a bordered card.
+- **`bob serve` polish** — Tier upgrade block (shown to free/explore users) now renders a `╔══╗` card with org and personal upgrade paths. Token system applied throughout.
+- **`bob index` polish** — Launch header, empty state, dependency map generation, and completion summary all render `╔══╗` cards. Partial completion state handled with a warning card.
+- **`bob userbob` polish** — Mission Control HUD redesigned as a `╔══╗` card. Live simulation and local simulation headers redesigned. `/status` slash command output redesigned as a card.
+- **Design token system complete** — Every CLI surface now uses the confirmed semantic token system. `userbob.ts`, `serve.ts`, `fork.ts`, `push.ts`, and `index.ts` all updated. The UI polish arc is fully complete across all surfaces.
 ## What's New in v1.4.0
 
 - **Interactive Profile Viewer** — `bob profile --view` now launches a fully interactive selector where you choose scope (daily, weekly, monthly, or all), section (decision, emotions, mood, behavioral, strategic, DNA, predictions, summary), and display mode (summary or full). Navigate your entire behavioral profile without memorizing flags.
