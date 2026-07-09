@@ -1,3 +1,5 @@
+// File: src/ui/session-header.ts
+
 import chalk from 'chalk';
 import * as path from 'path';
 import { getConfig } from '../core/config-store.js';
@@ -77,7 +79,7 @@ export function renderSessionHeader(mode: 'chat' | 'consult' | 'personalized'): 
 
   // Command hints
   const hints = mode === 'chat'
-    ? MUTED('  ▸ /exit  /new  /clear  /include  /delete  /deepdive')
+    ? MUTED('  ▸ /exit  /new  /clear  /include  /delete  /deepdive  /ref  /pin')
     : MUTED('  ▸ /exit  /new  /clear  /include');
 
   console.log(hints);
