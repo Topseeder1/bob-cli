@@ -62,3 +62,4 @@ src/ui/agent-hub.ts
 src/ui/agent-renderer.ts
 src/ui/agent-run-renderer.ts
 src/ui/animations/
+src/ai/personas/
