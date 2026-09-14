@@ -32,3 +32,33 @@ src/ai/personas/persona-loader.ts
 
 # Bob local data
 .bob/
+src/idrp/
+src/commands/userbob.ts
+src/commands/autonomy.ts
+src/commands/agent-run.ts
+src/commands/agent.ts
+src/commands/analyse-auto.ts
+src/commands/analyse-results.ts
+src/commands/analyse.ts
+src/commands/command-center.ts
+src/commands/remote.ts
+src/commands/serve.ts
+src/commands/profile.ts
+src/core/agent-caller.ts
+src/core/agent-context.ts
+src/core/agent-executor.ts
+src/core/agent-parser.ts
+src/core/agent-queue.ts
+src/core/agent-reviewer.ts
+src/core/agent-satisfaction.ts
+src/core/agent-store.ts
+src/core/agent-summarizer.ts
+src/core/agent-tools.ts
+src/core/cloud-profiler.ts
+src/core/director-bob.ts
+src/core/profile-store.ts
+src/ui/agent-chat.ts
+src/ui/agent-hub.ts
+src/ui/agent-renderer.ts
+src/ui/agent-run-renderer.ts
+src/ui/animations/
