@@ -1,3 +1,5 @@
+// File: src/commands/userbob.ts
+
 import { Command } from 'commander';
 import chalk from 'chalk';
 import * as readline from 'readline';
@@ -9,6 +11,7 @@ import { callCloudFunction, callHTTPFunction, isAuthenticated } from '../core/ap
 import { callLocalModel, LocalChatMessage } from '../ai/providers/local.js';
 import { buildDNAString } from '../core/profile-store.js';
 import { getActiveConversationId } from '../core/project-map.js';
+import { processResponseForAgent, getAgentCapabilityPrompt } from '../idrp/agent-adapter.js';
 
 // ─── DESIGN TOKENS ───
 const MODE_CONSULTANT = chalk.hex('#AB47BC');
@@ -31,25 +34,11 @@ function pad(text: string): string {
   return text + ' '.repeat(Math.max(0, padding));
 }
 
-function topRule(): string {
-  return BORDER('  ╔' + '═'.repeat(BOX_WIDTH) + '╗');
-}
-
-function botRule(): string {
-  return BORDER('  ╚' + '═'.repeat(BOX_WIDTH) + '╝');
-}
-
-function hRule(): string {
-  return BORDER('  ╠' + '═'.repeat(BOX_WIDTH) + '╣');
-}
-
-function row(content: string): string {
-  return BORDER('  ║ ') + pad(content) + BORDER(' ║');
-}
-
-function emptyRow(): string {
-  return BORDER('  ║') + ' '.repeat(BOX_WIDTH) + BORDER('║');
-}
+function topRule(): string { return BORDER('  ╔' + '═'.repeat(BOX_WIDTH) + '╗'); }
+function botRule(): string { return BORDER('  ╚' + '═'.repeat(BOX_WIDTH) + '╝'); }
+function hRule(): string { return BORDER('  ╠' + '═'.repeat(BOX_WIDTH) + '╣'); }
+function row(content: string): string { return BORDER('  ║ ') + pad(content) + BORDER(' ║'); }
+function emptyRow(): string { return BORDER('  ║') + ' '.repeat(BOX_WIDTH) + BORDER('║'); }
 
 const BOB_DIR = path.join(os.homedir(), '.bob');
 
@@ -76,9 +65,49 @@ function clearSessionFile(): void {
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 }
 
+// ─── SMART DEFAULT: Check if local endpoint is responding ─────────
+
+async function isLocalEndpointResponding(endpoint: string): Promise<boolean> {
+  try {
+    await fetch(endpoint, {
+      method: 'POST',
+      signal: AbortSignal.timeout(2000),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'test', messages: [], stream: false }),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveUserBobMode(
+  config: any,
+  forceLocal: boolean
+): Promise<'local' | 'platform'> {
+  if (forceLocal) return 'local';
+  if (config.userBobMode === 'local') return 'local';
+  if (config.userBobMode === 'platform') return 'platform';
+
+  if (config.localEndpoint) {
+    const responding = await isLocalEndpointResponding(config.localEndpoint);
+    if (responding) return 'local';
+  }
+
+  return 'platform';
+}
+
 // ─── MISSION CONTROL HUD ─────────────────────────────────────────
 
-function renderHUD(sat: number, target: number, stag: number, stagTarget: number, div: number, divTarget: number, grading: number): void {
+function renderHUD(
+  sat: number,
+  target: number,
+  stag: number,
+  stagTarget: number,
+  div: number,
+  divTarget: number,
+  grading: number
+): void {
   const satColor = sat >= target ? SUCCESS : sat >= target * 0.7 ? BRAND_SECONDARY : ERROR;
   const satStr   = satColor(`${sat}%`);
 
@@ -170,14 +199,9 @@ function wrapText(text: string, maxWidth: number): string[] {
   const paragraphs = text.split('\n');
 
   for (const paragraph of paragraphs) {
-    if (paragraph.trim() === '') {
-      lines.push('');
-      continue;
-    }
-
+    if (paragraph.trim() === '') { lines.push(''); continue; }
     const words = paragraph.split(' ');
     let currentLine = '';
-
     for (const word of words) {
       if ((currentLine + ' ' + word).trim().length > maxWidth) {
         if (currentLine) lines.push(currentLine.trim());
@@ -188,20 +212,22 @@ function wrapText(text: string, maxWidth: number): string[] {
     }
     if (currentLine.trim()) lines.push(currentLine.trim());
   }
-
   return lines;
 }
 
-// ─── SLASH COMMAND HANDLER ────────────────────────────────────────
+// ─── SLASH COMMAND HANDLER (PLATFORM) ────────────────────────────
 
-async function handleSlashCommand(input: string, config: any, conversationId: string): Promise<void> {
+async function handleSlashCommand(
+  input: string,
+  config: any,
+  conversationId: string
+): Promise<void> {
   const trimmed = input.trim();
 
   if (trimmed === '/status') {
     try {
       const response = await callCloudFunction('getCLIConversationMessages', { conversationId, since: null });
       const state    = response?.state || {};
-
       console.log('');
       console.log(topRule());
       console.log(row(BRAND_SECONDARY('◈  CURRENT PARAMETERS')));
@@ -227,17 +253,12 @@ async function handleSlashCommand(input: string, config: any, conversationId: st
     const param = setMatch[1].toLowerCase();
     const value = parseInt(setMatch[2], 10);
     const paramMap: Record<string, string> = {
-      grading: 'gradingStandard',
-      target:  'targetSatisfaction',
-      stag:    'stalemateZone',
-      div:     'divergenceThreshold',
+      grading: 'gradingStandard', target: 'targetSatisfaction',
+      stag: 'stalemateZone', div: 'divergenceThreshold',
     };
     try {
       await callHTTPFunction('userSimManagerService', {
-        action: 'updateParameters',
-        conversationId,
-        uid:   config.uid,
-        email: config.email,
+        action: 'updateParameters', conversationId, uid: config.uid, email: config.email,
         params: { [paramMap[param]]: value },
       });
       console.log(SUCCESS(`  ✅ ${param} updated to ${value}`));
@@ -252,11 +273,7 @@ async function handleSlashCommand(input: string, config: any, conversationId: st
     const note = injectMatch[1];
     try {
       await callHTTPFunction('userSimManagerService', {
-        action: 'injectNote',
-        conversationId,
-        uid:   config.uid,
-        email: config.email,
-        note,
+        action: 'injectNote', conversationId, uid: config.uid, email: config.email, note,
       });
       console.log(SUCCESS(`  ✅ Director's note injected.`));
     } catch (e: any) {
@@ -276,32 +293,19 @@ async function runPlatformSimulation(
   mission: string,
   params: { target: number; grading: number; stag: number; div: number }
 ): Promise<void> {
-
   await callHTTPFunction('userSimManagerService', {
-    action: 'updateParameters',
-    conversationId,
-    uid:   config.uid,
-    email: config.email,
+    action: 'updateParameters', conversationId, uid: config.uid, email: config.email,
     params: {
-      targetSatisfaction:  params.target,
-      gradingStandard:     params.grading,
-      stalemateZone:       params.stag,
-      divergenceThreshold: params.div,
+      targetSatisfaction: params.target, gradingStandard: params.grading,
+      stalemateZone: params.stag, divergenceThreshold: params.div,
     },
   });
-
   await callHTTPFunction('userSimManagerService', {
-    action: 'injectNote',
-    conversationId,
-    uid:   config.uid,
-    email: config.email,
-    note:  mission,
+    action: 'injectNote', conversationId, uid: config.uid, email: config.email, note: mission,
   });
 
   console.log(SUCCESS('  ✅ Mission injected. Simulation is running.'));
   console.log('');
-
-  // ─── Live simulation header card ───
   console.log(topRule());
   console.log(row(BRAND_PRIMARY('◉  LIVE SIMULATION')));
   console.log(row(MUTED('Messages will stream below as Bob and UserBob interact.')));
@@ -317,13 +321,11 @@ async function runPlatformSimulation(
   console.log(botRule());
   console.log('');
 
-  let running             = true;
+  let running = true;
   let lastMessageTimestamp = 0;
-  let hudState            = {
-    sat: 0, target: params.target,
-    stag: 0, stagTarget: params.stag,
-    div: 0, divTarget: params.div,
-    grading: params.grading,
+  let hudState = {
+    sat: 0, target: params.target, stag: 0, stagTarget: params.stag,
+    div: 0, divTarget: params.div, grading: params.grading,
   };
 
   const sigintHandler = async () => {
@@ -333,10 +335,7 @@ async function runPlatformSimulation(
     console.log(BRAND_SECONDARY('  🛑 Aborting simulation...'));
     try {
       await callHTTPFunction('userSimManagerService', {
-        action: 'abortMission',
-        conversationId,
-        uid:   config.uid,
-        email: config.email,
+        action: 'abortMission', conversationId, uid: config.uid, email: config.email,
       });
       console.log(SUCCESS('  ✅ Simulation aborted.'));
     } catch { }
@@ -350,58 +349,51 @@ async function runPlatformSimulation(
   rl.on('line', async (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
-
     if (trimmed === '/abort' || trimmed === 'abort') {
       running = false;
       console.log(BRAND_SECONDARY('  🛑 Aborting simulation...'));
       try {
         await callHTTPFunction('userSimManagerService', {
-          action: 'abortMission',
-          conversationId,
-          uid:   config.uid,
-          email: config.email,
+          action: 'abortMission', conversationId, uid: config.uid, email: config.email,
         });
         console.log(SUCCESS('  ✅ Simulation aborted.'));
       } catch { }
       rl.close();
       process.exit(0);
     }
-
     await handleSlashCommand(trimmed, config, conversationId);
   });
 
   while (running) {
     await new Promise(r => setTimeout(r, 3000));
-
     try {
       const response = await callCloudFunction('getCLIConversationMessages', {
-        conversationId,
-        since: lastMessageTimestamp || null,
+        conversationId, since: lastMessageTimestamp || null,
       });
-
       const messages: any[] = response?.messages || [];
-      const state            = response?.state    || {};
+      const state = response?.state || {};
 
       for (const msg of messages) {
         renderMessage(msg.sender, msg.message, msg.simulationAudit);
-        if (msg.timestamp && msg.timestamp > lastMessageTimestamp) {
-          lastMessageTimestamp = msg.timestamp;
-        }
+        if (msg.timestamp && msg.timestamp > lastMessageTimestamp) lastMessageTimestamp = msg.timestamp;
       }
 
-      if (state.currentSatisfaction !== undefined) hudState.sat     = state.currentSatisfaction;
-      if (state.targetSatisfaction  !== undefined) hudState.target  = state.targetSatisfaction;
-      if (state.gradingStandard     !== undefined) hudState.grading = state.gradingStandard;
+      if (state.currentSatisfaction !== undefined) hudState.sat = state.currentSatisfaction;
+      if (state.targetSatisfaction !== undefined) hudState.target = state.targetSatisfaction;
+      if (state.gradingStandard !== undefined) hudState.grading = state.gradingStandard;
       if (state.stalemateState) {
-        hudState.stag      = state.stalemateState.current ?? hudState.stag;
-        hudState.stagTarget = state.stalemateState.target  ?? hudState.stagTarget;
+        hudState.stag = state.stalemateState.current ?? hudState.stag;
+        hudState.stagTarget = state.stalemateState.target ?? hudState.stagTarget;
       }
       if (state.divergenceState) {
-        hudState.div      = state.divergenceState.current ?? hudState.div;
-        hudState.divTarget = state.divergenceState.target  ?? hudState.divTarget;
+        hudState.div = state.divergenceState.current ?? hudState.div;
+        hudState.divTarget = state.divergenceState.target ?? hudState.divTarget;
       }
 
-      if (state.userBobActive === false || (state.simulationStatus && state.simulationStatus !== 'RUNNING')) {
+      if (
+        state.userBobActive === false ||
+        (state.simulationStatus && state.simulationStatus !== 'RUNNING')
+      ) {
         if (messages.length > 0) {
           renderHUD(hudState.sat, hudState.target, hudState.stag, hudState.stagTarget, hudState.div, hudState.divTarget, hudState.grading);
         }
@@ -415,7 +407,6 @@ async function runPlatformSimulation(
       if (messages.length > 0) {
         renderHUD(hudState.sat, hudState.target, hudState.stag, hudState.stagTarget, hudState.div, hudState.divTarget, hudState.grading);
       }
-
     } catch (e: any) {
       console.log(ERROR(`  ❌ Poll error: ${e.message}`));
     }
@@ -423,6 +414,108 @@ async function runPlatformSimulation(
 
   rl.close();
   process.removeListener('SIGINT', sigintHandler);
+}
+
+// ─── IDRP HELPER: Wrap model call — returns response AND injections ─
+
+interface ModelWithIdrpResult {
+  response: string;
+  contextInjections: string[];
+}
+
+async function callModelWithIdrp(
+  endpoint: string,
+  messages: LocalChatMessage[],
+  config: any
+): Promise<ModelWithIdrpResult> {
+  const MAX_IDRP_ITERATIONS = 5;
+  let iterations = 0;
+  let finalResponse = '';
+  const allInjections: string[] = [];
+
+  const idrpConfig = {
+    idrpReadFileMaxLines: parseInt(config.idrpReadFileMaxLines) || 500,
+    idrpBlockedDirectories: config.idrpBlockedDirectories
+      ? String(config.idrpBlockedDirectories).split(',').map((s: string) => s.trim()).filter(Boolean)
+      : [],
+    idrpUnblockedDirectories: config.idrpUnblockedDirectories
+      ? String(config.idrpUnblockedDirectories).split(',').map((s: string) => s.trim()).filter(Boolean)
+      : [],
+    idrpListDirMaxDepth: parseInt(config.idrpListDirMaxDepth) || 3,
+    idrpListDirDefaultDepth: parseInt(config.idrpListDirDefaultDepth) || 1,
+    idrpSearchMaxResults: parseInt(config.idrpSearchMaxResults) || 50,
+    idrpSearchMaxFileSize: parseInt(config.idrpSearchMaxFileSize) || 100000,
+    idrpDangerousCommands:
+      config.idrpDangerousCommands === true || config.idrpDangerousCommands === 'true',
+    idrpCommandWhitelist: config.idrpCommandWhitelist
+      ? String(config.idrpCommandWhitelist).split(',').map((s: string) => s.trim()).filter(Boolean)
+      : [],
+    idrpCommandTimeout: parseInt(config.idrpCommandTimeout) || 30,
+  };
+
+  while (iterations < MAX_IDRP_ITERATIONS) {
+    iterations++;
+
+    const localResult = await callLocalModel(endpoint, messages);
+    const rawResponse =
+      typeof localResult === 'object' && localResult.text
+        ? localResult.text
+        : (localResult as unknown as string);
+
+    const routerResult = processResponseForAgent(rawResponse, process.cwd(), idrpConfig);
+
+    if (!routerResult.shouldRecall) {
+      finalResponse = routerResult.displayText;
+      allInjections.push(...routerResult.contextInjections);
+      break;
+    }
+
+    finalResponse = routerResult.displayText;
+    allInjections.push(...routerResult.contextInjections);
+    messages.push({ role: 'assistant', content: rawResponse });
+    messages.push({
+      role: 'user',
+      content: routerResult.contextInjections.join('\n\n---\n\n'),
+    });
+  }
+
+  return { response: finalResponse, contextInjections: allInjections };
+}
+
+// ─── FALLBACK SAT: Estimate satisfaction from text when JSON missing ─
+
+function estimateSatFromText(text: string): number {
+  const lower = text.toLowerCase();
+  if (
+    lower.includes('excellent') ||
+    lower.includes('perfect') ||
+    lower.includes('outstanding') ||
+    lower.includes('great work')
+  ) return 75;
+  if (
+    lower.includes('good') ||
+    lower.includes('well done') ||
+    lower.includes('solid') ||
+    lower.includes('correct')
+  ) return 65;
+  if (
+    lower.includes('incomplete') ||
+    lower.includes('missing') ||
+    lower.includes('wrong') ||
+    lower.includes('incorrect')
+  ) return 25;
+  if (
+    lower.includes('not sure') ||
+    lower.includes('unclear') ||
+    lower.includes('needs more') ||
+    lower.includes('more detail')
+  ) return 35;
+  if (
+    lower.includes('converging') ||
+    lower.includes('progress') ||
+    lower.includes('improving')
+  ) return 60;
+  return 50;
 }
 
 // ─── LOCAL SIMULATION ─────────────────────────────────────────────
@@ -443,6 +536,7 @@ async function runLocalSimulation(
   let stalemateCurrent  = 0;
   let divergenceCurrent = 0;
   let lastStatus        = '';
+  let currentMission    = mission;
 
   const sigintHandler = () => {
     running = false;
@@ -456,8 +550,12 @@ async function runLocalSimulation(
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
   rl.setPrompt('');
 
+  let pendingInjection: string | null = null;
+  let pendingMission: string | null   = null;
+
   rl.on('line', (line) => {
     const t = line.trim();
+
     if (t === '/abort' || t === 'abort') {
       running = false;
       writeSessionFile({ active: false });
@@ -466,6 +564,7 @@ async function runLocalSimulation(
       rl.close();
       process.exit(0);
     }
+
     if (t.startsWith('/set ')) {
       const m = t.match(/^\/set\s+(grading|target|stag|div)\s+(\d+)$/i);
       if (m) {
@@ -477,11 +576,13 @@ async function runLocalSimulation(
         console.log(SUCCESS(`  ✅ ${m[1]} updated to ${val} (local)`));
       }
     }
+
     if (t === '/status') {
       console.log('');
       console.log(topRule());
       console.log(row(BRAND_SECONDARY('◈  LOCAL SIM PARAMETERS')));
       console.log(hRule());
+      console.log(row(MUTED('▸ Mission:    ') + chalk.white(currentMission.slice(0, 40) + (currentMission.length > 40 ? '...' : ''))));
       console.log(row(MUTED('▸ Target:     ') + chalk.white(`${params.target}%`)));
       console.log(row(MUTED('▸ Grading:    ') + chalk.white(`${params.grading}`)));
       console.log(row(MUTED('▸ Stag Limit: ') + chalk.white(`${params.stag || '∞'}`)));
@@ -495,29 +596,48 @@ async function runLocalSimulation(
       console.log(botRule());
       console.log('');
     }
+
+    // ─── /inject — tactical note ───
+    const injectMatch = t.match(/^\/inject\s+"(.+)"$/);
+    if (injectMatch) {
+      pendingInjection = injectMatch[1];
+      console.log(SUCCESS(`  ✅ Director's note queued. Will inject on next turn.`));
+    }
+
+    // ─── /mission — replace entire mission ───
+    const missionMatch = t.match(/^\/mission\s+"(.+)"$/);
+    if (missionMatch) {
+      pendingMission = missionMatch[1];
+      console.log(SUCCESS(`  ✅ Mission update queued. Will take effect on next turn.`));
+    }
   });
 
-  const bobSystem    = `You are Bob — a senior AI engineering consultant. A developer's digital twin (UserBob) is evaluating your work. Respond helpfully and directly to advance the mission. Mission context: ${mission}`;
-  const userBobSystem = dnaString
-    ? `You are a digital twin of a software engineer. You ARE this developer. Your personality, communication style, and engineering philosophy are defined below.\n\nMission: ${mission}\n\n${dnaString}\n\nAfter each Bob response, evaluate it 0-100 on how well it advances YOUR mission. Reply with your natural reaction, then append exactly one JSON footer on its own line:\n{"satisfactionScore": <0-100>, "status": "CONVERGING|STAGNATING|DIVERGING"}`
-    : `You are a digital twin of a software engineer. You have no personal profile loaded — respond based on the mission context only.\n\nMission: ${mission}\n\nAfter each Bob response, evaluate it 0-100 on mission alignment. Reply with your reaction, then append exactly one JSON footer on its own line:\n{"satisfactionScore": <0-100>, "status": "CONVERGING|STAGNATING|DIVERGING"}`;
+  // ─── Capability prompt for autonomous agents ───
+  const capabilityPrompt = getAgentCapabilityPrompt();
+
+  // ─── System prompt builders — functions so they rebuild on mission change ───
+  const buildBobSystem = () =>
+    `You are Bob — a senior AI engineering consultant. A developer's digital twin (UserBob) is evaluating your work. Respond helpfully and directly to advance the mission. Mission context: ${currentMission}\n\n${capabilityPrompt}`;
+
+  const buildUserBobSystem = () => dnaString
+    ? `You are a digital twin of a software engineer. You ARE this developer. Your personality, communication style, and engineering philosophy are defined below.\n\nMission: ${currentMission}\n\n${dnaString}\n\n${capabilityPrompt}\n\nThe conversation history may contain [IDRP CONTEXT] blocks — these are file contents already loaded by Bob. Read them carefully before deciding whether to invoke capabilities yourself. Only invoke capabilities for information NOT already in the [IDRP CONTEXT] blocks.\n\nAfter each Bob response, evaluate it 0-100 on how well it advances YOUR mission. You can use your capabilities to verify Bob's suggestions against actual code when needed.\n\nIMPORTANT: You MUST end every single response with this exact JSON on its own line — no exceptions:\n{"satisfactionScore": <0-100>, "status": "CONVERGING|STAGNATING|DIVERGING"}\n\nCONVERGING = Bob is making real progress toward the mission goal.\nSTAGNATING = Bob is repeating himself or not advancing.\nDIVERGING = Bob is going off-topic or making things worse.`
+    : `You are a digital twin of a software engineer. You have no personal profile loaded — respond based on the mission context only.\n\nMission: ${currentMission}\n\n${capabilityPrompt}\n\nThe conversation history may contain [IDRP CONTEXT] blocks — these are file contents already loaded by Bob. Read them before invoking capabilities yourself.\n\nAfter each Bob response, evaluate it 0-100 on mission alignment. You can use capabilities to verify claims.\n\nIMPORTANT: You MUST end every single response with this exact JSON on its own line — no exceptions:\n{"satisfactionScore": <0-100>, "status": "CONVERGING|STAGNATING|DIVERGING"}\n\nCONVERGING = Bob is making real progress.\nSTAGNATING = Bob is repeating himself.\nDIVERGING = Bob is going off-topic or making things worse.`;
 
   // ─── Live local simulation header card ───
   console.log(topRule());
   console.log(row(BRAND_PRIMARY('◉  LIVE LOCAL SIMULATION')));
   console.log(row(MUTED('Bob and UserBob will converse autonomously below.')));
   console.log(hRule());
-  console.log(row(MUTED('▸ /abort              — Stop the simulation')));
-  console.log(row(MUTED('▸ /set target 90      — Update satisfaction target')));
-  console.log(row(MUTED('▸ /set grading 70     — Update Teacher\'s Curve')));
-  console.log(row(MUTED('▸ /set stag 5         — Update stalemate threshold')));
-  console.log(row(MUTED('▸ /set div 3          — Update divergence threshold')));
-  console.log(row(MUTED('▸ /status             — Show current parameters')));
+  console.log(row(MUTED('▸ /abort                    — Stop the simulation')));
+  console.log(row(MUTED('▸ /set target|grading|stag|div <n>')));
+  console.log(row(MUTED('▸ /inject "tactical note"   — Inject a note next turn')));
+  console.log(row(MUTED('▸ /mission "new mission"    — Replace entire mission')));
+  console.log(row(MUTED('▸ /status                   — Show current parameters')));
   console.log(emptyRow());
   console.log(botRule());
   console.log('');
 
-  const kickstart = `Mission received: "${mission}". Bob, what's your first move?`;
+  const kickstart = `Mission received: "${currentMission}". Bob, what's your first move?`;
   console.log(MODE_CONSULTANT('  UserBob > ') + chalk.white(kickstart));
   conversationHistory.push({ role: 'user', content: kickstart });
 
@@ -527,26 +647,55 @@ async function runLocalSimulation(
 
     turns++;
 
+    // ─── Apply pending mission update ───
+    if (pendingMission !== null) {
+      currentMission = pendingMission;
+      pendingMission = null;
+      const missionMsg = `[MISSION UPDATE] New mission: "${currentMission}"`;
+      renderMessage('system', `Mission updated to: "${currentMission}"`);
+      conversationHistory.push({ role: 'user', content: missionMsg });
+    }
+
+    // ─── Apply pending injection ───
+    if (pendingInjection !== null) {
+      const noteMsg = `[DIRECTOR'S NOTE] ${pendingInjection}`;
+      renderMessage('system', `Director's note: "${pendingInjection}"`);
+      conversationHistory.push({ role: 'user', content: noteMsg });
+      pendingInjection = null;
+    }
+
     try {
+      // ─── BOB'S TURN (with IDRP) ───
       const bobMessages: LocalChatMessage[] = [
-        { role: 'system', content: bobSystem },
+        { role: 'system', content: buildBobSystem() },
         ...conversationHistory,
       ];
-      const bobResponse = await callLocalModel(config.localEndpoint!, bobMessages);
-      console.log(BRAND_PRIMARY('  Bob       > ') + chalk.white(bobResponse));
-      conversationHistory.push({ role: 'assistant', content: bobResponse });
+      const bobResult = await callModelWithIdrp(config.localEndpoint!, bobMessages, config);
+      renderMessage('bob', bobResult.response);
+      conversationHistory.push({ role: 'assistant', content: bobResult.response });
 
+      // ─── Push Bob's IDRP context into shared history ───
+      // Prevents UserBob from re-reading the same files Bob already loaded.
+      if (bobResult.contextInjections.length > 0) {
+        conversationHistory.push({
+          role: 'user',
+          content: `[IDRP CONTEXT — already loaded by Bob]\n\n${bobResult.contextInjections.join('\n\n---\n\n')}`,
+        });
+      }
+
+      // ─── USERBOB'S TURN (with IDRP) ───
       const ubMessages: LocalChatMessage[] = [
-        { role: 'system', content: userBobSystem },
+        { role: 'system', content: buildUserBobSystem() },
         ...conversationHistory,
       ];
-      const ubResponse = await callLocalModel(config.localEndpoint!, ubMessages);
+      const ubResult = await callModelWithIdrp(config.localEndpoint!, ubMessages, config);
 
-      const jsonMatch    = ubResponse.match(/\{[^}]*"satisfactionScore"[^}]*\}/);
-      const cleanResponse = ubResponse.replace(/\{[^}]*"satisfactionScore"[^}]*\}/, '').trim();
-      console.log(MODE_CONSULTANT('  UserBob > ') + chalk.white(cleanResponse));
+      const jsonMatch     = ubResult.response.match(/\{[^}]*"satisfactionScore"[^}]*\}/);
+      const cleanResponse = ubResult.response.replace(/\{[^}]*"satisfactionScore"[^}]*\}/, '').trim();
+      renderMessage('userBob', cleanResponse);
 
       let auditChips: string[] = [];
+
       if (jsonMatch) {
         try {
           const audit    = JSON.parse(jsonMatch[0]);
@@ -558,36 +707,47 @@ async function runLocalSimulation(
             BLUE(`[RAW: ${rawScore}]`),
             MUTED(`[${lastStatus}]`),
           ];
-
-          if (lastStatus === 'STAGNATING') {
-            stalemateCurrent++;
-            if (params.stag > 0 && stalemateCurrent >= params.stag) {
-              console.log('            ' + auditChips.join(' '));
-              renderHUD(sat, params.target, stalemateCurrent, params.stag, divergenceCurrent, params.div, params.grading);
-              console.log(BRAND_SECONDARY(`  🏁 Stalemate threshold reached (${stalemateCurrent}/${params.stag}). Simulation ended.`));
-              running = false;
-              break;
-            }
-          } else if (lastStatus === 'DIVERGING') {
-            divergenceCurrent++;
-            stalemateCurrent = 0;
-            if (params.div > 0 && divergenceCurrent >= params.div) {
-              console.log('            ' + auditChips.join(' '));
-              renderHUD(sat, params.target, stalemateCurrent, params.stag, divergenceCurrent, params.div, params.grading);
-              console.log(BRAND_SECONDARY(`  🏁 Divergence threshold reached (${divergenceCurrent}/${params.div}). Simulation ended.`));
-              running = false;
-              break;
-            }
-          } else if (lastStatus === 'CONVERGING') {
-            stalemateCurrent  = 0;
-            divergenceCurrent = 0;
-          }
         } catch { }
+      } else {
+        // ─── Fallback SAT when JSON footer is missing ───
+        const rawScore = estimateSatFromText(ubResult.response);
+        sat        = Math.round(rawScore * (params.grading / 100));
+        lastStatus = 'CONVERGING';
+        auditChips = [
+          INFO(`[SAT: ${sat}%]`),
+          MUTED(`[RAW: ~${rawScore}]`),
+          WARNING(`[fallback estimate]`),
+        ];
       }
+
+      if (lastStatus === 'STAGNATING') {
+        stalemateCurrent++;
+        if (params.stag > 0 && stalemateCurrent >= params.stag) {
+          console.log('            ' + auditChips.join(' '));
+          renderHUD(sat, params.target, stalemateCurrent, params.stag, divergenceCurrent, params.div, params.grading);
+          console.log(BRAND_SECONDARY(`  🏁 Stalemate threshold reached (${stalemateCurrent}/${params.stag}). Simulation ended.`));
+          running = false;
+          break;
+        }
+      } else if (lastStatus === 'DIVERGING') {
+        divergenceCurrent++;
+        stalemateCurrent = 0;
+        if (params.div > 0 && divergenceCurrent >= params.div) {
+          console.log('            ' + auditChips.join(' '));
+          renderHUD(sat, params.target, stalemateCurrent, params.stag, divergenceCurrent, params.div, params.grading);
+          console.log(BRAND_SECONDARY(`  🏁 Divergence threshold reached (${divergenceCurrent}/${params.div}). Simulation ended.`));
+          running = false;
+          break;
+        }
+      } else if (lastStatus === 'CONVERGING') {
+        stalemateCurrent  = 0;
+        divergenceCurrent = 0;
+      }
+
       if (auditChips.length) console.log('            ' + auditChips.join(' '));
 
-      conversationHistory.push({ role: 'user', content: ubResponse });
-      writeSessionFile({ active: true, turns, mission, sat });
+      conversationHistory.push({ role: 'user', content: ubResult.response });
+      writeSessionFile({ active: true, turns, mission: currentMission, sat });
 
       renderHUD(sat, params.target, stalemateCurrent, params.stag, divergenceCurrent, params.div, params.grading);
 
@@ -620,13 +780,25 @@ export function registerUserBobCommand(program: Command): void {
   program
     .command('userbob [mission...]')
     .description('Launch your UserBob digital twin simulation')
-    .option('--local',                'Force local Ollama mode (Tier 1)')
-    .option('--target <number>',      'Satisfaction target (default: 85)', '85')
-    .option('--grading <number>',     'Teacher\'s curve grading standard (default: 50)', '50')
-    .option('--stag <number>',        'Stalemate threshold — 0 = infinite (default: 0)', '0')
-    .option('--div <number>',         'Divergence threshold — 0 = infinite (default: 0)', '0')
-    .option('--resume',               'Resume without injecting a new mission note')
-    .action(async (missionArgs: string[], options: { local?: boolean; target: string; grading: string; stag: string; div: string; resume?: boolean }) => {
+    .option('--local',            'Force local model mode (Tier 1)')
+    .option('--platform',         'Force platform mode (Tier 3)')
+    .option('--target <number>',  'Satisfaction target (default: 85)', '85')
+    .option('--grading <number>', 'Teacher\'s curve grading standard — 100 = standard, lower = harder (default: 100)', '100')
+    .option('--stag <number>',    'Stalemate threshold — 0 = infinite (default: 0)', '0')
+    .option('--div <number>',     'Divergence threshold — 0 = infinite (default: 0)', '0')
+    .option('--resume',           'Resume without injecting a new mission note')
+    .action(async (
+      missionArgs: string[],
+      options: {
+        local?: boolean;
+        platform?: boolean;
+        target: string;
+        grading: string;
+        stag: string;
+        div: string;
+        resume?: boolean;
+      }
+    ) => {
       const config = getConfig();
 
       const params = {
@@ -636,12 +808,30 @@ export function registerUserBobCommand(program: Command): void {
         div:     parseInt(options.div,     10),
       };
 
-      const usePlatform = !options.local && isAuthenticated();
+      // ─── Validate: warn if target is unreachable with current grading ───
+      const maxAchievableSat = params.grading;
+      if (params.target > maxAchievableSat) {
+        console.log('');
+        console.log(WARNING(`  ⚠️  Warning: Target (${params.target}%) cannot be reached with grading (${params.grading}%).`));
+        console.log(WARNING(`  Maximum achievable SAT = ${maxAchievableSat}%.`));
+        console.log(MUTED(`  Tip: Raise --grading to at least ${params.target} or lower --target below ${params.grading}.`));
+        console.log('');
+      }
+
+      // ─── Resolve mode: explicit flag > config > smart default ───
+      let resolvedMode: 'local' | 'platform';
+      if (options.platform) {
+        resolvedMode = 'platform';
+      } else {
+        resolvedMode = await resolveUserBobMode(config, !!options.local);
+      }
+
+      const usePlatform = resolvedMode === 'platform' && isAuthenticated();
 
       console.log('');
       console.log(BORDER('  ╔══════════════════════════════════════════════════════════╗'));
       console.log(BORDER('  ║ ') + MODE_CONSULTANT('🤖  UserBob — Digital Twin Simulation'));
-      console.log(BORDER('  ║ ') + MUTED(`Mode: ${usePlatform ? 'Platform (Tier 3)' : 'Local Ollama (Tier 1)'}`));
+      console.log(BORDER('  ║ ') + MUTED(`Mode: ${usePlatform ? 'Platform (Tier 3)' : 'Local Model (Tier 1) + IDRP'}`));
       console.log(BORDER('  ╚══════════════════════════════════════════════════════════╝'));
       console.log('');
 
@@ -691,19 +881,14 @@ export function registerUserBobCommand(program: Command): void {
 
       if (usePlatform) {
         const conversationId = getActiveConversationId(process.cwd()) || config.conversationId;
-
         if (!conversationId) {
           console.log(ERROR('  ❌ No active conversation. Run `bob conversations join` first.'));
           process.exit(1);
         }
-
         if (options.resume) {
           console.log(BRAND_SECONDARY('  🔄 Resuming simulation (no new mission note)...'));
           await callHTTPFunction('userSimManagerService', {
-            action: 'resumeMission',
-            conversationId,
-            uid:   config.uid,
-            email: config.email,
+            action: 'resumeMission', conversationId, uid: config.uid, email: config.email,
           });
           console.log(SUCCESS('  ✅ Simulation resumed. Entering watch mode...'));
           console.log('');

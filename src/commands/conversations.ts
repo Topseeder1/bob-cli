@@ -91,12 +91,13 @@ export function registerConversationsCommand(program: Command): void {
       }
     });
 
-  // bob conversations join
+  // ─── bob conversations join ───────────────────────────────────
   convosCmd
     .command('join')
     .description('Pick a conversation to continue')
+    .option('-p, --page <number>', 'Start on this page', '1')
     .option('-s, --search <query>', 'Search first')
-    .action(async (options: { search?: string }) => {
+    .action(async (options: { page?: string; search?: string }) => {
       const config = getConfig();
 
       if (!config.loggedIn || !config.authToken) {
@@ -107,50 +108,184 @@ export function registerConversationsCommand(program: Command): void {
         return;
       }
 
-      const spinner = ora({
-        text: INFO('  Loading conversations...'),
-        spinner: 'dots',
-      }).start();
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-      try {
-        const result = await callCloudFunction('listCLIConversations', {
-          page: 1,
-          limit: 15,
-          search: options.search || null,
-        });
+      // ─── NAVIGATION STATE ───
+      let currentPage = parseInt(options.page || '1');
+      let currentSearch = options.search || null;
 
-        spinner.stop();
+      // ─── NAVIGATION LOOP ───
+      while (true) {
+        const spinner = ora({
+          text: INFO('  Loading conversations...'),
+          spinner: 'dots',
+        }).start();
 
-        const conversations = result.conversations || [];
+        let result: any;
+        let conversations: any[];
+
+        try {
+          result = await callCloudFunction('listCLIConversations', {
+            page: currentPage,
+            limit: 15,
+            search: currentSearch,
+          });
+
+          spinner.stop();
+          conversations = result.conversations || [];
+
+        } catch (error: any) {
+          spinner.stop();
+          console.log('');
+          console.log(ERROR(`  ❌ ${error.message}`));
+          console.log('');
+          rl.close();
+          return;
+        }
 
         if (conversations.length === 0) {
           console.log('');
           console.log(WARNING('  ⚠️  No conversations found.'));
+          if (currentSearch) {
+            console.log(MUTED(`  Search: "${currentSearch}"`));
+            console.log('');
+            // ─── Give user a way out when search returns nothing ───
+            const retryAnswer = await new Promise<string>(resolve => {
+              rl.question(INFO('  [s = new search  |  c = clear search  |  0 = cancel]: '), resolve);
+            });
+            const retryTrimmed = retryAnswer.trim().toLowerCase();
+
+            if (retryTrimmed === 's' || retryTrimmed === 'search') {
+              const searchAnswer = await new Promise<string>(resolve => {
+                rl.question(INFO('  Search query: '), resolve);
+              });
+              const newSearch = searchAnswer.trim() || null;
+              if (newSearch) {
+                console.log(MUTED(`  Searching for: "${newSearch}"`));
+              }
+              currentSearch = newSearch;
+              currentPage = 1;
+              continue;
+            }
+
+            if (retryTrimmed === 'c' || retryTrimmed === 'clear') {
+              console.log(MUTED('  Search cleared — showing all conversations.'));
+              currentSearch = null;
+              currentPage = 1;
+              continue;
+            }
+
+            // anything else — cancel
+            console.log(MUTED('  Cancelled.'));
+            console.log('');
+            rl.close();
+            return;
+          }
+
+          // no search active and no results — nothing to do
           console.log('');
+          rl.close();
           return;
         }
 
-        renderConversationList(conversations, config.conversationId, options.search, result, true);
+        renderConversationList(conversations, config.conversationId, currentSearch || undefined, result, true);
 
-        // ─── SELECTION PROMPT ───
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        // ─── BUILD PROMPT based on available navigation ───
+        const totalPages = result.totalPages || 1;
+        const hasNext = currentPage < totalPages;
+        const hasPrev = currentPage > 1;
+
+        const promptParts: string[] = [`1-${conversations.length} to select`];
+        if (hasNext) promptParts.push('n = next page');
+        if (hasPrev) promptParts.push('p = prev page');
+        promptParts.push('s = search');
+        if (currentSearch) promptParts.push('c = clear search');
+        promptParts.push('0 = cancel');
+
         const answer = await new Promise<string>(resolve => {
-          rl.question(INFO('  Select (1-' + conversations.length + ') or 0 to cancel: '), resolve);
+          rl.question(INFO(`  [${promptParts.join('  |  ')}]: `), resolve);
         });
-        rl.close();
 
-        const selection = parseInt(answer.trim());
+        const trimmed = answer.trim().toLowerCase();
 
-        if (isNaN(selection) || selection === 0) {
+        // ─── CANCEL ───
+        if (trimmed === '0' || trimmed === 'q' || trimmed === 'cancel') {
           console.log(MUTED('  Cancelled.'));
           console.log('');
+          rl.close();
+          return;
+        }
+
+        // ─── NEXT PAGE ───
+        if (trimmed === 'n' || trimmed === 'next') {
+          if (hasNext) {
+            currentPage++;
+          } else {
+            console.log(MUTED('  Already on the last page.'));
+          }
+          continue;
+        }
+
+        // ─── PREVIOUS PAGE ───
+        if (trimmed === 'p' || trimmed === 'prev') {
+          if (hasPrev) {
+            currentPage--;
+          } else {
+            console.log(MUTED('  Already on the first page.'));
+          }
+          continue;
+        }
+
+        // ─── SEARCH ───
+        if (trimmed === 's' || trimmed === 'search') {
+          const searchAnswer = await new Promise<string>(resolve => {
+            rl.question(INFO('  Search query (or Enter to clear): '), resolve);
+          });
+          const newSearch = searchAnswer.trim() || null;
+
+          if (newSearch) {
+            console.log(MUTED(`  Searching for: "${newSearch}"`));
+          } else if (currentSearch) {
+            console.log(MUTED('  Search cleared — showing all conversations.'));
+          }
+
+          currentSearch = newSearch;
+          currentPage = 1;
+          continue;
+        }
+
+        // ─── CLEAR SEARCH ───
+        if (trimmed === 'c' || trimmed === 'clear') {
+          if (currentSearch) {
+            console.log(MUTED('  Search cleared — showing all conversations.'));
+            currentSearch = null;
+            currentPage = 1;
+          } else {
+            console.log(MUTED('  No active search to clear.'));
+          }
+          continue;
+        }
+
+        // ─── NUMERIC SELECTION ───
+        const selection = parseInt(trimmed);
+
+        if (isNaN(selection)) {
+          console.log(ERROR('  ❌ Invalid input. Enter a number, n, p, s, c, or 0.'));
+          console.log('');
+          continue;
+        }
+
+        if (selection === 0) {
+          console.log(MUTED('  Cancelled.'));
+          console.log('');
+          rl.close();
           return;
         }
 
         if (selection < 1 || selection > conversations.length) {
-          console.log(ERROR('  ❌ Invalid selection.'));
+          console.log(ERROR(`  ❌ Invalid selection. Enter a number between 1 and ${conversations.length}.`));
           console.log('');
-          return;
+          continue;
         }
 
         const selected = conversations[selection - 1];
@@ -165,11 +300,8 @@ export function registerConversationsCommand(program: Command): void {
         console.log(MUTED('  Your next `bob chat` message will continue this conversation.'));
         console.log('');
 
-      } catch (error: any) {
-        spinner.stop();
-        console.log('');
-        console.log(ERROR(`  ❌ ${error.message}`));
-        console.log('');
+        rl.close();
+        return;
       }
     });
 }
@@ -185,7 +317,7 @@ function renderConversationList(conversations: any[], activeConvoId: string | un
   console.log(BRAND_SECONDARY(`  💬 ${isJoinMode ? 'Select a Conversation' : 'Your Conversations'}`) + MUTED(` (${result.total || conversations.length} total)`));
 
   if (search) {
-    console.log(MUTED(`  Search: "${search}"`));
+    console.log(MUTED(`  Search: "${search}"`) + INFO('  (c to clear)'));
   }
 
   console.log(MUTED('  ─────────────────────────────────────────────────────────────────'));
@@ -214,12 +346,26 @@ function renderConversationList(conversations: any[], activeConvoId: string | un
 
   if (result.totalPages && result.totalPages > 1) {
     console.log(MUTED(`  Page ${result.page}/${result.totalPages}`));
-    if (result.page < result.totalPages) {
-      console.log(MUTED(`  ▸ bob conversations --page ${result.page + 1}`));
+    if (!isJoinMode) {
+      if (result.page < result.totalPages) {
+        console.log(MUTED(`  ▸ bob conversations --page ${result.page + 1}`));
+      }
     }
   }
 
-  if (!isJoinMode) {
+  // ─── JOIN MODE: show navigation hint ───
+  if (isJoinMode) {
+    console.log('');
+    const hints: string[] = [];
+    if (result.totalPages && result.totalPages > 1) {
+      hints.push('n = next page');
+      hints.push('p = prev page');
+    }
+    hints.push('s = search');
+    if (search) hints.push('c = clear search');
+    hints.push('0 = cancel');
+    console.log(MUTED(`  Navigation:  ${hints.join('  |  ')}`));
+  } else {
     console.log('');
     console.log(MUTED('  ▸ bob conversations join    — Pick a conversation to continue'));
     console.log(MUTED('  ▸ bob conversations -s "q"  — Search by keyword'));

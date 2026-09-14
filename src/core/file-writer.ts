@@ -59,9 +59,18 @@ export function extractProposedFile(response: string): ProposedFile | null {
 }
 
 export function stripCodeBlockFromResponse(response: string): string {
-  let stripped = response.replace(/```[\w]*\n\s*(?:\/\/\s*(?:File:)?\s*[\w\-\.\/\\]+\.\w+|#\s*(?:File:)?\s*[\w\-\.\/\\]+\.\w+|\*\s*\[FILE:)[^\n]*\n[\s\S]*?```/g, '').trim();
+  // ─── FIX: Path pattern now uses [^\n]+ instead of [\w\-\.\/\\]+
+  // to handle paths with spaces e.g. 'lib/Pages/The Forge/Patch/...'
+  // The old pattern excluded spaces, so spaced paths were never stripped
+  // from the response — causing full code dumps to the terminal.
+  let stripped = response.replace(
+    /```[\w]*\n\s*(?:\/\/\s*(?:File:)?\s*[^\n]+\.\w+|#\s*(?:File:)?\s*[^\n]+\.\w+|\*\s*\[FILE:)[^\n]*\n[\s\S]*?```/g,
+    ''
+  ).trim();
+
   // Also strip capability_invocation blocks
-  stripped = stripped.replace(/```capability_invocation\s*[\s\S]*?```/g, '').trim();
+  stripped = stripped.replace(/```capability_invocation\s*[\s\S]*?``` /g, '').trim();
+
   return stripped;
 }
 
@@ -83,12 +92,8 @@ function isLocalProjectFile(filePath: string): boolean {
 }
 
 export async function processAllProposedFiles(response: string, autoApprove: boolean = false, existingRl?: readline.Interface): Promise<void> {
-  // Standard file proposals (// File: pattern)
   const proposals = extractAllProposedFiles(response);
-
-  // IDRP capability invocation proposals
   const idrpProposals = extractIDRPFileProposals(response);
-
   const allProposals = [...proposals, ...idrpProposals];
   if (allProposals.length === 0) return;
 
@@ -156,8 +161,6 @@ export async function proposeAndWriteFile(proposed: ProposedFile, autoApprove: b
     let answer: string;
 
     if (existingRl) {
-      // Windows + Node 24: readline interfaces deadlock on shared stdin.
-      // Use synchronous stdin read — no buffering, no race conditions.
       existingRl.pause();
       process.stdout.write(promptText);
       const buf = Buffer.alloc(1024);
@@ -225,7 +228,7 @@ function writeFile(targetPath: string, content: string, originalFilePath: string
  */
 function extractIDRPFileProposals(response: string): ProposedFile[] {
   const proposals: ProposedFile[] = [];
-  const invocationRegex = /```capability_invocation\s*([\s\S]*?)```/g;
+  const invocationRegex = /```capability_invocation\s*[\s\S]*?```/g;
   let match;
 
   while ((match = invocationRegex.exec(response)) !== null) {

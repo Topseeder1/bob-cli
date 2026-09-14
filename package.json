@@ -1,13 +1,13 @@
 {
   "name": "@bobsworkshop/cli",
-  "version": "1.5.1",
+  "version": "1.7.2",
   "description": "Bob's CLI — AI coding assistant and Forge orchestrator",
   "type": "module",
   "files": [
     "dist"
   ],
   "bin": {
-    "bob": "./dist/bob.js"
+    "bob": "./dist/bin/bob.js"
   },
   "scripts": {
     "build": "tsup",

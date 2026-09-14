@@ -1,5 +1,3 @@
-// File: src/commands/chat.ts
-
 import { Command } from 'commander';
 import chalk from 'chalk';
 import * as fs from 'fs';
@@ -28,6 +26,8 @@ import {
   ResponseMetadata,
 } from '../ui/chat-renderer.js';
 import { detectReference, fetchAvailableReferences, fetchProjectFiles, loadStickyReference, saveStickyReference } from '../core/reference-resolver.js';
+import { processResponse } from '../idrp/local-router.js';
+import { getCapabilityPrompt } from '../idrp/capability-prompt.js';
 
 // ─── DESIGN TOKENS ───
 const BRAND_PRIMARY = chalk.hex('#E66F24');
@@ -135,20 +135,66 @@ async function sendMessage(
       }
 
       const systemPrompt = buildPersonalizedPrompt('standard');
+      const autoInvoke = config.idrpAutoInvoke !== false;
+      const capabilityPrompt = getCapabilityPrompt(autoInvoke);
       const messages: LocalChatMessage[] = [
-        { role: 'system', content: systemPrompt + (fullContext ? `\n\n## PROJECT CONTEXT ##\n${fullContext}` : '') },
+        { role: 'system', content: systemPrompt + capabilityPrompt + (fullContext ? `\n\n## PROJECT CONTEXT ##\n${fullContext}` : '') },
         ...history,
         { role: 'user', content: message },
       ];
 
-      const localResult = await callLocalModel(config.localEndpoint, messages);
+      // ─── IDRP LOOP ───────────────────────────────────────────────
+      // Call model → check for capability invocations → execute → reinject → repeat
+      const MAX_IDRP_ITERATIONS = 5;
+      let iterations = 0;
+      response = '';
 
-      if (typeof localResult === 'object' && localResult.text) {
-        response = localResult.text;
-        tokenCount = localResult.evalCount || undefined;
-      } else {
-        response = localResult as unknown as string;
+      while (iterations < MAX_IDRP_ITERATIONS) {
+        iterations++;
+
+        const localResult = await callLocalModel(config.localEndpoint, messages);
+        let rawResponse: string;
+
+        if (typeof localResult === 'object' && localResult.text) {
+          rawResponse = localResult.text;
+          tokenCount = (tokenCount || 0) + (localResult.evalCount || 0);
+        } else {
+          rawResponse = localResult as unknown as string;
+        }
+
+        // Parse IDRP local config from stored config values
+        const idrpConfig = {
+          idrpReadFileMaxLines: parseInt(config.idrpReadFileMaxLines) || 500,
+          idrpBlockedDirectories: config.idrpBlockedDirectories
+            ? String(config.idrpBlockedDirectories).split(',').map((s: string) => s.trim()).filter(Boolean)
+            : [],
+          idrpUnblockedDirectories: config.idrpUnblockedDirectories
+            ? String(config.idrpUnblockedDirectories).split(',').map((s: string) => s.trim()).filter(Boolean)
+            : [],
+        };
+
+        // Route through IDRP — checks for capability invocations
+        const routerResult = await processResponse(rawResponse, process.cwd(), idrpConfig);
+
+        if (!routerResult.shouldRecall) {
+          // No capabilities invoked (or all resolved) — we're done
+          response = routerResult.displayText;
+          break;
+        }
+
+        // Capabilities were invoked — inject results and call model again
+        response = routerResult.displayText;
+        messages.push({ role: 'assistant', content: rawResponse });
+        messages.push({
+          role: 'user',
+          content: routerResult.contextInjections.join('\n\n---\n\n'),
+        });
       }
+
+      if (iterations >= MAX_IDRP_ITERATIONS) {
+        console.log(WARNING('  ⚠️  IDRP loop limit reached. Returning last response.'));
+      }
+      // ─────────────────────────────────────────────────────────────
 
       saveMessage(conversationId, { sender: 'user', message, timestamp: new Date().toISOString(), type: 'text' }, { tier: 'local', provider: config.provider, mode });
       saveMessage(conversationId, { sender: 'bob', message: response, timestamp: new Date().toISOString(), type: 'text' }, { tier: 'local', provider: config.provider, mode });
@@ -168,7 +214,6 @@ async function sendMessage(
         additionalContext: { localContext: fullContext || null },
         isLocalModel: false,
         activePersonaId: null,
-        // ─── REFERENCE PARAMS ───
         ...(activeRef && { referenceAlias: activeRef.alias }),
         ...(activeRef?.filename && { referenceFilename: activeRef.filename }),
       });
@@ -195,7 +240,6 @@ async function sendMessage(
         isPassalongActive: false,
         linkedConvoId: null,
         localContext: fullContext || null,
-        // ─── REFERENCE PARAMS ───
         ...(activeRef && { referenceAlias: activeRef.alias }),
         ...(activeRef?.filename && { referenceFilename: activeRef.filename }),
       });

@@ -104,7 +104,7 @@ const program = new Command();
 program
   .name('bob')
   .description('Bob\'s CLI — AI coding assistant and Forge orchestrator')
-  .version('1.5.1');
+  .version('1.5.2');
 
 program.helpOption(false);
 

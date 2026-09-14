@@ -75,6 +75,7 @@ const STATUS_MESSAGES_RANDOM = [
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 let timerInterval: NodeJS.Timeout | null = null;
 let timerStartMs: number = 0;
+let timerPausedAt: number = 0;
 let spinnerIndex: number = 0;
 let currentMessageIndex: number = 0;
 let nextMessageChangeAt: number = 3000;
@@ -92,6 +93,7 @@ function shuffleArray(arr: string[]): string[] {
 
 export function startElapsedTimer(): void {
   timerStartMs = Date.now();
+  timerPausedAt = 0;
   spinnerIndex = 0;
   currentMessageIndex = 0;
   nextMessageChangeAt = 3000;
@@ -135,6 +137,61 @@ export function stopElapsedTimer(): number {
   return Date.now() - timerStartMs;
 }
 
+/**
+ * Pauses the spinner without stopping the clock.
+ * Clears the current spinner line so IDRP tiles can render cleanly.
+ * Call before rendering any IDRP capability tile.
+ */
+export function pauseElapsedTimer(): void {
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+    timerPausedAt = Date.now();
+    // Clear the spinner line so the tile renders on a clean line
+    process.stdout.write('\r\x1B[2K');
+  }
+}
+
+/**
+ * Resumes the spinner after an IDRP tile has finished rendering.
+ * Preserves the elapsed time accumulated before the pause.
+ */
+export function resumeElapsedTimer(): void {
+  if (timerPausedAt > 0 && timerInterval === null) {
+    // Adjust start time to account for the pause duration
+    const pauseDuration = Date.now() - timerPausedAt;
+    timerStartMs += pauseDuration;
+    timerPausedAt = 0;
+
+    timerInterval = setInterval(() => {
+      const elapsedMs = Date.now() - timerStartMs;
+      const elapsedSec = Math.floor(elapsedMs / 1000);
+      const frame = SPINNER_FRAMES[spinnerIndex % SPINNER_FRAMES.length];
+      spinnerIndex++;
+
+      if (elapsedMs >= nextMessageChangeAt) {
+        currentMessageIndex++;
+
+        if (currentMessageIndex < STATUS_MESSAGES_ORDERED.length) {
+          currentStatusMessage = STATUS_MESSAGES_ORDERED[currentMessageIndex];
+        } else {
+          const randomIdx = currentMessageIndex - STATUS_MESSAGES_ORDERED.length;
+          if (randomIdx < shuffledRandomMessages.length) {
+            currentStatusMessage = shuffledRandomMessages[randomIdx];
+          } else {
+            currentStatusMessage = 'Still working — this is a complex one...';
+          }
+        }
+
+        const randomDelay = 5000 + Math.floor(Math.random() * 5000);
+        nextMessageChangeAt = elapsedMs + randomDelay;
+      }
+
+      process.stdout.write(`\r\x1B[2K  ${BRAND_SECONDARY(frame)} ${chalk.white(currentStatusMessage)} ${MUTED(`${elapsedSec}s`)}`);
+    }, 80);
+  }
+}
+
 // ─── USER MESSAGE (RIGHT-ALIGNED) ───
 export function renderUserMessage(message: string): void {
   const termWidth = process.stdout.columns || 80;
@@ -173,7 +230,6 @@ export async function renderBobResponse(response: string, metadata: ResponseMeta
     const segment = segments[s];
 
     if (segment.type === 'code') {
-      // Code block with character-by-character typewriter
       console.log('');
       const codeLines = segment.content.split('\n');
       for (const line of codeLines) {
@@ -182,10 +238,8 @@ export async function renderBobResponse(response: string, metadata: ResponseMeta
       }
       console.log('');
     } else {
-      // Render markdown then reveal line-by-line
       const rendered = renderMarkdown(segment.content);
       const renderedLines = rendered.split('\n');
-      // Re-wrap to content width
       const textLines: string[] = [];
       for (const rLine of renderedLines) {
         const visibleLen = stripAnsi(rLine).length;
@@ -203,28 +257,22 @@ export async function renderBobResponse(response: string, metadata: ResponseMeta
       }
     }
 
-    // Pause between segments
     if (s < segments.length - 1) {
       await sleep(180);
     }
   }
 
-  // ─── CLOSING ───
   console.log('');
-
-  // ─── METADATA ZONE ───
   renderMetadata(metadata);
 }
 
 // ─── METADATA ZONE ───
 function renderMetadata(metadata: ResponseMetadata): void {
-  // Referenced files
   if (metadata.selectedFiles && metadata.selectedFiles.length > 0) {
     const fileList = metadata.selectedFiles.map(f => f.split('/').pop()).join(', ');
     console.log(MUTED(`  └─ 📂 Referenced: ${fileList}`));
   }
 
-  // Constraints (Tier 3 only)
   if (metadata.constraints && metadata.constraints.length > 0) {
     const count = metadata.constraints.length;
     if (count <= 3) {
@@ -241,14 +289,12 @@ function renderMetadata(metadata: ResponseMetadata): void {
     }
   }
 
-  // Deep dive hint — context-aware
   if (metadata.mode !== 'deepdive') {
     console.log(BRAND_SECONDARY(`  └─ 🍴 /deepdive`));
   } else {
     console.log(MODE_DEEPDIVE(`  └─ 🏊 /surface to exit`));
   }
 
-  // Elapsed + tokens (NOT indented)
   const elapsed = (metadata.elapsedMs / 1000).toFixed(1);
   const tokenStr = metadata.tokenCount ? ` · ${metadata.tokenCount} tok` : '';
   console.log(MUTED(`  ⏱ ${elapsed}s${tokenStr}`));
@@ -319,7 +365,7 @@ export function renderFileDiff(filePath: string, newContent: string, isNew: bool
   console.log('');
 }
 
-// ─── CONSTRAINTS TILE (for /constraints command) ───
+// ─── CONSTRAINTS TILE ───
 export function renderConstraintsTile(constraints: string[]): void {
   if (constraints.length === 0) {
     console.log('');
